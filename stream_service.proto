@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package streamingservice;
+
+// 定义支持的解码器类型
+enum DecoderType {
+    DECODER_CPU_OPENCV = 0;   // 默认：使用 CPU OpenCV 解码
+    DECODER_GPU_CUDA = 1;     // 预留：使用 Nvidia CUDA 硬件解码
+    DECODER_FFMPEG_NATIVE = 2;// 预留：使用 FFmpeg 原生解码
+}
+
+service RTSPStreamService {
+    rpc StartStream (StartRequest) returns (StartResponse);
+    rpc StopStream (StopRequest) returns (StopResponse);
+    rpc GetLatestFrame (FrameRequest) returns (FrameResponse);
+    rpc CheckStream (CheckRequest) returns (CheckResponse);
+}
+
+message StartRequest {
+    string rtsp_url = 1;
+    int32 heartbeat_timeout_ms = 2; 
+    int32 decode_interval_ms = 3;   
+    DecoderType decoder_type = 4;   // 【新增】指定解码器类型
+}
+
+message StartResponse {
+    bool success = 1;
+    string stream_id = 2;
+    string message = 3;
+}
+
+message StopRequest {
+    string stream_id = 1;
+}
+
+message StopResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message FrameRequest {
+    string stream_id = 1;
+}
+
+message FrameResponse {
+    bool success = 1;
+    bytes image_data = 2;
+    string message = 3;
+}
+
+message CheckRequest {
+    string stream_id = 1;
+}
+
+message CheckResponse {
+    bool exists = 1;        
+    bool is_connected = 2;  
+    string message = 3;
+}
