@@ -6,11 +6,13 @@
 StreamTask::StreamTask(const std::string &url,
                        int heartbeat_timeout_ms,
                        int decode_interval_ms,
+                       int decoder_type,
                        std::unique_ptr<IVideoDecoder> decoder,
                        std::shared_ptr<IImageEncoder> encoder)
     : url_(url),
       heartbeat_timeout_ms_(heartbeat_timeout_ms),
       decode_interval_ms_(decode_interval_ms),
+      decoder_type_(decoder_type),
       decoder_(std::move(decoder)),
       encoder_(std::move(encoder)),
       running_(true),
@@ -86,14 +88,15 @@ void StreamTask::readLoop()
 {
     spdlog::info("StreamTask starting for URL: {}", url_);
     decoder_->open(url_);
-    auto last_decode_time = std::chrono::steady_clock::now();
-
-    // 定义丢帧计数器
-    int startup_drop_count = 0;
-    const int DROP_FRAMES_ON_START = 15; // 启动时丢弃前 15 帧（根据 fps 不同，约等待 0.5-1秒）
+    
+    // 帧率控制
+    auto last_encode_time = std::chrono::steady_clock::now();
+    const int64_t encode_interval_us = decode_interval_ms_ > 0 
+        ? decode_interval_ms_ * 1000LL 
+        : 0;  // 0 表示不限制，每帧都编码
 
     while (running_)
-    {
+    {   
         if (!decoder_->isOpened())
         {
             if (connected_)
@@ -103,8 +106,7 @@ void StreamTask::readLoop()
             connected_ = false;
             std::this_thread::sleep_for(std::chrono::seconds(1));
             decoder_->open(url_);
-            // 重连后，也要重置计数器，防止重连瞬间花屏
-            startup_drop_count = 0;
+            last_encode_time = std::chrono::steady_clock::now();
             continue;
         }
 
@@ -118,37 +120,40 @@ void StreamTask::readLoop()
             decoder_->release();
             continue;
         }
+
         connected_ = true;
 
-        // 解码间隔控制
-        if (decode_interval_ms_ > 0)
+        // 帧率控制：检查是否到达编码间隔
+        bool should_encode = true;
+        if (encode_interval_us > 0)
         {
             auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_decode_time).count();
-            if (elapsed < decode_interval_ms_)
+            auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(now - last_encode_time).count();
+            if (elapsed_us < encode_interval_us)
             {
+                // 还没到编码时间，消费帧但不处理
                 cv::Mat dummy;
-                decoder_->retrieve(dummy, false); // 继续丢弃帧，但不处理数据，保持解码器状态更新
-                continue;
+                decoder_->retrieve(dummy, false);
+                should_encode = false;
             }
-            last_decode_time = now;
+            else
+            {
+                last_encode_time = now;
+            }
         }
 
-        cv::Mat frame;
-        if (decoder_->retrieve(frame, true) && !frame.empty())
+        if (should_encode)
         {
-            if (startup_drop_count < DROP_FRAMES_ON_START)
+            // 获取帧并编码
+            cv::Mat frame;
+            if (decoder_->retrieve(frame, true) && !frame.empty())
             {
-                startup_drop_count++;
-                continue;
-            }
-
-            // 只有画面稳定后，才执行编码并存入缓存
-            std::string temp_encoded_buffer;
-            if (encoder_->encode(frame, temp_encoded_buffer))
-            {
-                std::lock_guard<std::mutex> lock(frame_mutex_);
-                latest_encoded_frame_ = std::move(temp_encoded_buffer);
+                std::string temp_encoded_buffer;
+                if (encoder_->encode(frame, temp_encoded_buffer))
+                {
+                    std::lock_guard<std::mutex> lock(frame_mutex_);
+                    latest_encoded_frame_ = std::move(temp_encoded_buffer);
+                }
             }
         }
     }

@@ -20,6 +20,12 @@ public:
     bool grab() override;
     bool retrieve(cv::Mat &frame, bool need_data = true) override;
     void release() override;
+    
+    // GPU 帧支持
+    bool isGpuFrame() const override { return true; }
+    uint8_t* getGpuFramePtr() override { return last_gpu_frame_ptr_; }
+    int getWidth() const override;
+    int getHeight() const override;
 
 private:
     std::shared_ptr<FFHDDemuxer::FFmpegDemuxer> demuxer_;
@@ -28,6 +34,7 @@ private:
     bool is_opened_ = false;
     int64_t last_pts_ = 0;
     unsigned int last_frame_index_ = 0;
+    uint8_t* last_gpu_frame_ptr_ = nullptr;  // 最后一帧的 GPU 指针
 
     // 用于处理解码器延迟（多个输入包才产出一帧，或一个包产出多帧的情况）
     int decoded_frames_available_ = 0;

@@ -53,7 +53,12 @@ message CheckRequest {
 }
 
 message CheckResponse {
-    bool exists = 1;        
-    bool is_connected = 2;  
-    string message = 3;
+    bool exists = 1;           // 流是否存在
+    bool is_connected = 2;     // 是否已连接
+    string message = 3;        // 状态消息
+    string rtsp_url = 4;       // RTSP 地址
+    DecoderType decoder_type = 5;  // 解码器类型
+    int32 width = 6;           // 视频宽度
+    int32 height = 7;          // 视频高度
+    int32 decode_interval_ms = 8;  // 解码间隔
 }

@@ -17,10 +17,9 @@ DECODER_GPU_CUDA = stream_service_pb2.DECODER_GPU_CUDA
 class RemoteVideoCapture:
     def __init__(self, 
                  rtsp_url: str, 
-                 server_address: str = '127.0.0.1:50051',
+                 server_address: str = '127.0.0.1:50052',
                  heartbeat_timeout_ms: int = 10000,
                  decode_interval_ms: int = 0,
-                 # 新增：允许指定解码器类型，默认 CPU
                  decoder_type: int = None):
         self.rtsp_url = rtsp_url
         self.server_address = server_address
@@ -49,7 +48,7 @@ class RemoteVideoCapture:
                 rtsp_url=self.rtsp_url,
                 heartbeat_timeout_ms=self.heartbeat_timeout_ms,
                 decode_interval_ms=self.decode_interval_ms,
-                decoder_type=stream_service_pb2.DECODER_CPU_OPENCV
+                decoder_type=self.decoder_type
             )
             # 增加超时限制，防止卡死
             resp = self.stub.StartStream(req, timeout=5) 
@@ -76,6 +75,40 @@ class RemoteVideoCapture:
             return resp.exists and resp.is_connected
         except grpc.RpcError:
             return False
+
+    def get_stream_info(self) -> dict:
+        """
+        获取流的详细信息
+        :return: 包含流信息的字典，如果获取失败返回 None
+        """
+        if not self.stream_id or not self.stub:
+            return None
+            
+        req = stream_service_pb2.CheckRequest(stream_id=self.stream_id)
+        try:
+            resp = self.stub.CheckStream(req)
+            if not resp.exists:
+                return None
+            
+            decoder_names = {
+                stream_service_pb2.DECODER_CPU_OPENCV: "CPU (OpenCV)",
+                stream_service_pb2.DECODER_GPU_CUDA: "GPU (CUDA)",
+                stream_service_pb2.DECODER_FFMPEG_NATIVE: "FFmpeg Native"
+            }
+            
+            return {
+                "stream_id": self.stream_id,
+                "rtsp_url": resp.rtsp_url,
+                "is_connected": resp.is_connected,
+                "decoder_type": decoder_names.get(resp.decoder_type, "Unknown"),
+                "width": resp.width,
+                "height": resp.height,
+                "decode_interval_ms": resp.decode_interval_ms,
+                "message": resp.message
+            }
+        except grpc.RpcError as e:
+            logging.error(f"获取流信息失败: {e.details()}")
+            return None
 
     def read(self):
         """

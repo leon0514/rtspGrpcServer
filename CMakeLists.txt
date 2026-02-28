@@ -100,6 +100,7 @@ set(SRC_FILES
     src/stream_task.cpp
     src/decoder_factory.cpp
     src/opencv_encoder.cpp
+    src/nvjpeg_encoder.cpp   # GPU JPEG 编码器
     src/opencv_decoder.cpp
     src/ffmpeg_demuxer.cpp
     src/cuda_tools.cpp
@@ -135,6 +136,7 @@ target_link_libraries(rtsp_server
     ${NVCUVID_LIBRARY}      
     CUDA::cudart              # CUDA Runtime API (cudaMalloc等)
     CUDA::cuda_driver         # CUDA Driver API (cuInit等，解决cuda.h相关链接)
+    CUDA::nvjpeg              # NVJPEG GPU 编码库
     protobuf::libprotobuf 
     grpc++_reflection
 )

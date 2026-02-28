@@ -63,7 +63,9 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     }
 
     // 2. 创建解码器 (Decoder)
-    auto decoder = DecoderFactory::create(request->decoder_type());
+    auto decoder_type = request->decoder_type();
+    spdlog::info("Decoder type: {}", decoder_type);
+    auto decoder = DecoderFactory::create(decoder_type);
     if (!decoder)
     {
         response->set_success(false);
@@ -71,8 +73,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         return grpc::Status::OK;
     }
 
-    // 3. 创建编码器 (Encoder)
-    // 这里默认创建 OpenCV JPEG 编码器，质量 85
+    // 3. 创建编码器 (Encoder) - 统一使用 OpenCV 编码器
     auto encoder = std::make_shared<OpencvEncoder>(85);
 
     // 4. 创建流任务 (StreamTask)
@@ -81,8 +82,9 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         req_url,
         request->heartbeat_timeout_ms(),
         request->decode_interval_ms(),
+        static_cast<int>(decoder_type),
         std::move(decoder),
-        encoder // 传入编码器
+        encoder
     );
 
     std::string stream_id = generate_uuid();
@@ -207,7 +209,12 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
     {
         response->set_exists(true);
         response->set_is_connected(task->isConnected());
-        response->set_message("Stream exists");
+        response->set_rtsp_url(task->getUrl());
+        response->set_decoder_type(static_cast<streamingservice::DecoderType>(task->getDecoderType()));
+        response->set_width(task->getWidth());
+        response->set_height(task->getHeight());
+        response->set_decode_interval_ms(task->getDecodeIntervalMs());
+        response->set_message(task->isConnected() ? "Stream is connected" : "Stream exists but not connected");
     }
     else
     {

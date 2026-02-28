@@ -4,13 +4,48 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include "rtsp_service.h"
+#include <cuda_runtime.h>
 
 // spdlog headers
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
+// 初始化 CUDA 设备，设置同步模式为阻塞同步，避免 CPU 自旋等待
+void initCudaDevice()
+{
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || device_count == 0)
+    {
+        spdlog::warn("No CUDA devices found, GPU decoding will not be available");
+        return;
+    }
+
+    // 设置同步模式为 BlockingSync，避免默认的自旋等待浪费 CPU
+    // cudaDeviceScheduleBlockingSync: 线程将阻塞等待 GPU，不消耗 CPU
+    // cudaDeviceScheduleSpin: 默认值，自旋等待，高 CPU 占用
+    // cudaDeviceScheduleYield: 让出 CPU，但延迟稍高
+    err = cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+    if (err != cudaSuccess)
+    {
+        // 如果设备已经初始化，需要先重置
+        if (err == cudaErrorSetOnActiveProcess)
+        {
+            cudaDeviceReset();
+            cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+        }
+    }
+
+    // 选择默认设备
+    cudaSetDevice(0);
+    spdlog::info("CUDA initialized with {} device(s), using BlockingSync mode", device_count);
+}
+
 int main()
 {
+    // 初始化 CUDA 设备，设置同步模式减少 CPU 占用
+    initCudaDevice();
+
     grpc::reflection::InitProtoReflectionServerBuilderPlugin();
     std::string server_address("0.0.0.0:50051");
     RTSPServiceImpl service;

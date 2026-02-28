@@ -454,11 +454,9 @@ namespace FFHDDecoder
                 }
             }
 
-            if (!m_bUseDeviceFrame)
-            {
-                // 确保数据是到位的
-                checkCudaDriver(cuStreamSynchronize(m_cuvidStream));
-            }
+            // 必须在 unmap 之前同步，确保异步拷贝完成
+            // 无论是 D2D 还是 D2H 拷贝，都需要等待完成后才能 unmap
+            checkCudaDriver(cuStreamSynchronize(m_cuvidStream));
             checkCudaDriver(cuvidUnmapVideoFrame(m_hDecoder, dpSrcFrame));
             return 1;
         }
@@ -587,6 +585,7 @@ namespace FFHDDecoder
         int m_gpuID = -1;
         unsigned int m_nMaxWidth = 0, m_nMaxHeight = 0;
         bool m_output_bgr = true;
+        bool m_bSynced = false; // 用于延迟同步的标志
     };
 
     std::shared_ptr<CUVIDDecoder> create_cuvid_decoder(

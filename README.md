@@ -48,7 +48,10 @@ By default, an executable (e.g. `rtsp_grpc_server`) will be produced in `build/`
 
 Build an image using the provided `Dockerfile`:
 ```bash
-docker build -t rtsp-grpc-server .
+
+docker stop cuda_stream && docker rm cuda_stream
+docker rmi grpc_stream
+docker build -t grpc_stream .
 ```
 Run the container:
 ```bash

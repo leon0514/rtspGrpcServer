@@ -10,12 +10,13 @@
 class StreamTask
 {
 public:
-    // 修改构造函数：增加 encoder 参数
+    // 修改构造函数：增加 encoder 参数和 decoder_type
     StreamTask(const std::string &url,
                int heartbeat_timeout_ms,
                int decode_interval_ms,
+               int decoder_type,
                std::unique_ptr<IVideoDecoder> decoder,
-               std::shared_ptr<IImageEncoder> encoder); // 【新增】
+               std::shared_ptr<IImageEncoder> encoder);
     ~StreamTask();
 
     void stop();
@@ -27,6 +28,10 @@ public:
     bool isTimeout();
 
     std::string getUrl() const { return url_; }
+    int getDecoderType() const { return decoder_type_; }
+    int getDecodeIntervalMs() const { return decode_interval_ms_; }
+    int getWidth() const { return decoder_ ? decoder_->getWidth() : 0; }
+    int getHeight() const { return decoder_ ? decoder_->getHeight() : 0; }
     void keepAlive();
 
 private:
@@ -36,6 +41,7 @@ private:
     std::string url_;
     int heartbeat_timeout_ms_;
     int decode_interval_ms_;
+    int decoder_type_;
 
     std::unique_ptr<IVideoDecoder> decoder_;
     std::shared_ptr<IImageEncoder> encoder_; // 【新增】持有编码器

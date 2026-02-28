@@ -1,6 +1,5 @@
 #include "cuda_decoder.h"
-
-#include "cuda_decoder.h"
+#include <cuda_runtime.h>
 #include <thread>
 #include <chrono>
 #include <iostream>
@@ -10,7 +9,7 @@
 bool CudaDecoder::open(const std::string &url)
 {
     last_url_ = url;      // 保存 URL 供后续重连使用
-    frames_to_skip_ = 15; // 重置丢弃帧计数
+    frames_to_skip_ = 50; // GPU 解码器需要更多帧来预热和稳定 BGR 转换
 
     const int MAX_ATTEMPTS = 3;
 
@@ -28,14 +27,16 @@ bool CudaDecoder::open(const std::string &url)
         else
         {
             // 2. 创建硬解码器
+            // bUseDeviceFrame = true: 数据保留在 GPU，减少不必要的拷贝
+            // output_bgr = true: 在 GPU 上完成 NV12→BGR 转换
             decoder_ = FFHDDecoder::create_cuvid_decoder(
-                false,
+                true,   // bUseDeviceFrame = true
                 FFHDDecoder::ffmpeg2NvCodecId(demuxer_->get_video_codec()),
                 -1,
                 0,
                 nullptr,
                 nullptr,
-                true);
+                true);  // output_bgr = true
 
             if (!decoder_)
             {
@@ -131,30 +132,61 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
     if (!isOpened() || decoded_frames_available_ <= 0)
         return false;
 
-    void *ptr = decoder_->get_frame(&last_pts_, &last_frame_index_);
-    if (!ptr)
+    void *gpu_ptr = decoder_->get_frame(&last_pts_, &last_frame_index_);
+    if (!gpu_ptr)
         return false;
+
+    // 保存 GPU 帧指针
+    last_gpu_frame_ptr_ = static_cast<uint8_t*>(gpu_ptr);
 
     if (need_data && frames_to_skip_ > 0)
     {
         frames_to_skip_--;
         decoded_frames_available_--;
-        return false; // 返回 false，让外部主循环继续 grab 下一帧
+        return false;
     }
 
-    // 逻辑：如果是需要丢弃的帧，则跳过并直接递减计数
     if (frames_to_skip_ > 0)
     {
         frames_to_skip_--;
         decoded_frames_available_--;
-        return false; // 返回 false，让外部主循环继续 grab 下一帧
+        return false;
     }
 
-    cv::Mat decoded_mat(decoder_->get_height(), decoder_->get_width(), CV_8UC3, ptr);
-    frame = decoded_mat.clone();
+    if (need_data)
+    {
+        // 需要数据时，从 GPU 拷贝到 CPU
+        int width = decoder_->get_width();
+        int height = decoder_->get_height();
+        int frame_bytes = decoder_->get_frame_bytes();
+        
+        // 调试信息
+        // spdlog::info("Frame info: {}x{}, frame_bytes={}, expected_bgr_bytes={}", 
+        //              width, height, frame_bytes, width * height * 3);
+        
+        // 使用解码器报告的实际大小
+        frame.create(height, width, CV_8UC3);
+        cudaError_t err = cudaMemcpy(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess)
+        {
+            spdlog::error("cudaMemcpy failed: {}", cudaGetErrorString(err));
+            decoded_frames_available_--;
+            return false;
+        }
+    }
 
     decoded_frames_available_--;
     return true;
+}
+
+int CudaDecoder::getWidth() const
+{
+    return decoder_ ? decoder_->get_width() : 0;
+}
+
+int CudaDecoder::getHeight() const
+{
+    return decoder_ ? decoder_->get_height() : 0;
 }
 
 void CudaDecoder::release()
