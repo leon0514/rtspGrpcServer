@@ -82,11 +82,19 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. stream_servic
 | stream_id | string | 流 ID |
 | message | string | 消息 |
 
+
+> **服务启动**：执行可执行文件时可指定监听地址/端口，格式 `address:port`。
+> 如 `./rtsp_server` 默认为 `0.0.0.0:50051`，
+> `./rtsp_server 0.0.0.0:6000` 则监听 6000 端口。
+
 **Python 示例：**
 ```python
+import os
 from remote_capture import RemoteCapture, DECODER_GPU_CUDA
 
-client = RemoteCapture('127.0.0.1:50051')
+# 客户端默认连接到 127.0.0.1:50051，可通过环境变量 GRPC_SERVER 或在构造中指定其它地址
+server_addr = os.getenv('GRPC_SERVER', '127.0.0.1:50051')
+client = RemoteCapture(server_addr)
 client.connect()
 
 stream_id = client.start_stream(
