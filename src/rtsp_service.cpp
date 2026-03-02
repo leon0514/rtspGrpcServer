@@ -98,6 +98,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         request->heartbeat_timeout_ms(),
         request->decode_interval_ms(),
         static_cast<int>(decoder_type),
+        request->keep_on_failure(),
         std::move(decoder),
         encoder
     );
@@ -319,19 +320,31 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
     if (task)
     {
         response->set_exists(true);
-        response->set_is_connected(task->isConnected());
+        response->set_status(static_cast<streamingservice::StreamStatus>(task->getStatus()));
         response->set_rtsp_url(task->getUrl());
         response->set_decoder_type(static_cast<streamingservice::DecoderType>(task->getDecoderType()));
         response->set_width(task->getWidth());
         response->set_height(task->getHeight());
         response->set_decode_interval_ms(task->getDecodeIntervalMs());
-        response->set_message(task->isConnected() ? "Stream is connected" : "Stream exists but not connected");
+        
+        switch (task->getStatus())
+        {
+            case StreamStatus::CONNECTED:
+                response->set_message("已连接");
+                break;
+            case StreamStatus::CONNECTING:
+                response->set_message("连接中");
+                break;
+            case StreamStatus::DISCONNECTED:
+                response->set_message("无法连接");
+                break;
+        }
     }
     else
     {
         response->set_exists(false);
-        response->set_is_connected(false);
-        response->set_message("Stream ID not found");
+        response->set_status(streamingservice::STATUS_NOT_FOUND);
+        response->set_message("流不存在");
     }
     return grpc::Status::OK;
 }
@@ -353,7 +366,7 @@ grpc::Status RTSPServiceImpl::ListStreams(grpc::ServerContext *context, const st
         auto *stream_info = response->add_streams();
         stream_info->set_stream_id(stream_id);
         stream_info->set_rtsp_url(task->getUrl());
-        stream_info->set_is_connected(task->isConnected());
+        stream_info->set_status(static_cast<streamingservice::StreamStatus>(task->getStatus()));
         stream_info->set_decoder_type(static_cast<streamingservice::DecoderType>(task->getDecoderType()));
         stream_info->set_width(task->getWidth());
         stream_info->set_height(task->getHeight());
@@ -365,7 +378,7 @@ grpc::Status RTSPServiceImpl::ListStreams(grpc::ServerContext *context, const st
 }
 
 // =============================================================
-// cleanupLoop：后台线程，清理心跳超时的流
+// cleanupLoop：后台线程，清理心跳超时或已停止的流
 // =============================================================
 void RTSPServiceImpl::cleanupLoop()
 {
@@ -379,11 +392,27 @@ void RTSPServiceImpl::cleanupLoop()
             std::lock_guard<std::mutex> lock(map_mutex_);
             for (auto it = streams_.begin(); it != streams_.end();)
             {
-                if (it->second->isTimeout())
+                bool should_remove = false;
+                std::string reason;
+                
+                if (it->second->isStopped() && !it->second->shouldKeepOnFailure())
                 {
-                    spdlog::info("[TIMEOUT] Auto-cleaning zombie stream ID: {}", it->first);
+                    // 任务已停止且未设置保留，自动清理
+                    should_remove = true;
+                    reason = "STOPPED";
+                }
+                else if (it->second->isTimeout())
+                {
+                    // 心跳超时，无论是否设置保留都清理
+                    should_remove = true;
+                    reason = "TIMEOUT";
+                }
+                
+                if (should_remove)
+                {
+                    spdlog::info("[{}] Auto-cleaning stream ID: {}", reason, it->first);
                     tasks_to_stop.push_back(it->second);
-                    it = streams_.erase(it); // 从 Map 中移除
+                    it = streams_.erase(it);
                 }
                 else
                 {

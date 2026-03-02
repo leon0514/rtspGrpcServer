@@ -26,6 +26,20 @@ DECODER_NAMES = {
     DECODER_FFMPEG_NATIVE: "FFmpeg Native"
 }
 
+# 流状态常量
+STATUS_CONNECTING = stream_service_pb2.STATUS_CONNECTING
+STATUS_CONNECTED = stream_service_pb2.STATUS_CONNECTED
+STATUS_DISCONNECTED = stream_service_pb2.STATUS_DISCONNECTED
+STATUS_NOT_FOUND = stream_service_pb2.STATUS_NOT_FOUND
+
+# 流状态名称映射
+STATUS_NAMES = {
+    STATUS_CONNECTING: "连接中",
+    STATUS_CONNECTED: "已连接",
+    STATUS_DISCONNECTED: "无法连接",
+    STATUS_NOT_FOUND: "不存在"
+}
+
 
 class RemoteCapture:
     """
@@ -100,7 +114,8 @@ class RemoteCapture:
                      heartbeat_timeout_ms: int = 10000,
                      decode_interval_ms: int = 0,
                      decoder_type: int = DECODER_CPU_OPENCV,
-                     gpu_id: int = 0) -> Optional[str]:
+                     gpu_id: int = 0,
+                     keep_on_failure: bool = False) -> Optional[str]:
         """
         启动一个新的 RTSP 流
         :param rtsp_url: RTSP 地址
@@ -108,6 +123,7 @@ class RemoteCapture:
         :param decode_interval_ms: 解码间隔（毫秒），0 表示不限制
         :param decoder_type: 解码器类型
         :param gpu_id: GPU ID（仅 GPU 解码有效）
+        :param keep_on_failure: 打开失败时是否保留任务，默认 False
         :return: 成功返回 stream_id，失败返回 None
         """
         if not self.stub:
@@ -120,7 +136,8 @@ class RemoteCapture:
                 heartbeat_timeout_ms=heartbeat_timeout_ms,
                 decode_interval_ms=decode_interval_ms,
                 decoder_type=decoder_type,
-                gpu_id=gpu_id
+                gpu_id=gpu_id,
+                keep_on_failure=keep_on_failure
             )
             resp = self.stub.StartStream(req, timeout=10)
             
@@ -177,7 +194,8 @@ class RemoteCapture:
                 streams.append({
                     "stream_id": s.stream_id,
                     "rtsp_url": s.rtsp_url,
-                    "is_connected": s.is_connected,
+                    "status": s.status,
+                    "status_name": STATUS_NAMES.get(s.status, "未知"),
                     "decoder_type": DECODER_NAMES.get(s.decoder_type, "Unknown"),
                     "decoder_type_raw": s.decoder_type,
                     "width": s.width,
@@ -221,9 +239,11 @@ class RemoteCapture:
                 return None
             
             return {
+                "exists": resp.exists,
                 "stream_id": stream_id,
                 "rtsp_url": resp.rtsp_url,
-                "is_connected": resp.is_connected,
+                "status": resp.status,
+                "status_name": STATUS_NAMES.get(resp.status, "未知"),
                 "decoder_type": DECODER_NAMES.get(resp.decoder_type, "Unknown"),
                 "decoder_type_raw": resp.decoder_type,
                 "width": resp.width,
@@ -233,6 +253,16 @@ class RemoteCapture:
             }
         except grpc.RpcError:
             return None
+
+
+    def check_stream_exists(self, stream_id: str) -> bool:
+        """
+        检查流是否存在
+        :param stream_id: 流 ID
+        :return: 流是否存在
+        """
+        info = self.check_stream(stream_id)
+        return False if not info else info.get("exists", False)
     
     def is_stream_connected(self, stream_id: str) -> bool:
         """
@@ -241,7 +271,24 @@ class RemoteCapture:
         :return: 是否连接
         """
         info = self.check_stream(stream_id)
-        return info is not None and info.get("is_connected", False)
+        return info is not None and info.get("status") == STATUS_CONNECTED
+    
+    def get_stream_status(self, stream_id: str) -> int:
+        """
+        获取流的连接状态
+        :param stream_id: 流 ID
+        :return: 状态码，不存在返回 STATUS_NOT_FOUND
+        """
+        info = self.check_stream(stream_id)
+        return info.get("status", STATUS_NOT_FOUND) if info else STATUS_NOT_FOUND
+    
+    def get_stream_status_name(self, stream_id: str) -> str:
+        """
+        获取流的连接状态名称
+        :param stream_id: 流 ID
+        :return: 状态名称字符串
+        """
+        return STATUS_NAMES.get(self.get_stream_status(stream_id), "未知")
     
     # ==================== 帧获取 ====================
     
@@ -308,11 +355,7 @@ if __name__ == "__main__":
         # 查询当前所有流
         print(f"当前流数量: {client.get_stream_count()}")
         for s in client.list_streams():
-            print(f"  - {s['stream_id']}: {s['rtsp_url']} ({s['decoder_type']})")
-            print(client.check_stream(s['stream_id']))
-            print(client.stop_stream(s['stream_id']))
-            print(client.check_stream(s['stream_id']))
-        print(f"当前流数量: {client.get_stream_count()}")
+            print(f"  - {s['stream_id']}: {s['rtsp_url']} ({s['status_name']})")
         
         # 启动新流
         # stream_id = client.start_stream(

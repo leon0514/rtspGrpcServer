@@ -9,6 +9,14 @@ enum DecoderType {
     DECODER_FFMPEG_NATIVE = 2;// 预留：使用 FFmpeg 原生解码
 }
 
+// 流连接状态
+enum StreamStatus {
+    STATUS_CONNECTING = 0;    // 连接中
+    STATUS_CONNECTED = 1;     // 已连接
+    STATUS_DISCONNECTED = 2;  // 无法连接
+    STATUS_NOT_FOUND = 3;     // 不存在
+}
+
 service RTSPStreamService {
     rpc StartStream (StartRequest) returns (StartResponse);
     rpc StopStream (StopRequest) returns (StopResponse);
@@ -24,6 +32,7 @@ message StartRequest {
     int32 decode_interval_ms = 3;   
     DecoderType decoder_type = 4;   // 指定解码器类型
     int32 gpu_id = 5;               // GPU ID，仅对 GPU 解码有效，默认 0
+    bool keep_on_failure = 6;       // 打开失败时是否保留任务，默认 false（即自动删除）
 }
 
 message StartResponse {
@@ -54,6 +63,7 @@ message FrameResponse {
     bool success = 1;
     bytes image_data = 2;
     string message = 3;
+    bool stream_exists = 4;    // 流是否存在
 }
 
 message CheckRequest {
@@ -62,7 +72,7 @@ message CheckRequest {
 
 message CheckResponse {
     bool exists = 1;           // 流是否存在
-    bool is_connected = 2;     // 是否已连接
+    StreamStatus status = 2;   // 连接状态
     string message = 3;        // 状态消息
     string rtsp_url = 4;       // RTSP 地址
     DecoderType decoder_type = 5;  // 解码器类型
@@ -80,7 +90,7 @@ message ListStreamsRequest {
 message StreamInfo {
     string stream_id = 1;          // 流 ID
     string rtsp_url = 2;           // RTSP 地址
-    bool is_connected = 3;         // 是否已连接
+    StreamStatus status = 3;       // 连接状态
     DecoderType decoder_type = 4;  // 解码器类型
     int32 width = 5;               // 视频宽度
     int32 height = 6;              // 视频高度

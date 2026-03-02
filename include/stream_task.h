@@ -7,6 +7,13 @@
 #include <opencv2/opencv.hpp>
 #include "interfaces.h"
 
+// 流连接状态
+enum class StreamStatus {
+    CONNECTING = 0,    // 连接中
+    CONNECTED = 1,     // 已连接
+    DISCONNECTED = 2   // 无法连接
+};
+
 class StreamTask
 {
 public:
@@ -15,6 +22,7 @@ public:
                int heartbeat_timeout_ms,
                int decode_interval_ms,
                int decoder_type,
+               bool keep_on_failure,
                std::unique_ptr<IVideoDecoder> decoder,
                std::shared_ptr<IImageEncoder> encoder);
     ~StreamTask();
@@ -26,6 +34,9 @@ public:
 
     bool isConnected();
     bool isTimeout();
+    bool isStopped() const { return stopped_; }
+    bool shouldKeepOnFailure() const { return keep_on_failure_; }
+    StreamStatus getStatus() const { return status_; }
 
     std::string getUrl() const { return url_; }
     int getDecoderType() const { return decoder_type_; }
@@ -42,6 +53,7 @@ private:
     int heartbeat_timeout_ms_;
     int decode_interval_ms_;
     int decoder_type_;
+    bool keep_on_failure_;
 
     std::unique_ptr<IVideoDecoder> decoder_;
     std::shared_ptr<IImageEncoder> encoder_; // 【新增】持有编码器
@@ -53,6 +65,8 @@ private:
     std::mutex frame_mutex_;
     std::atomic<bool> running_;
     std::atomic<bool> connected_;
+    std::atomic<bool> stopped_{false};
+    std::atomic<StreamStatus> status_{StreamStatus::CONNECTING};
     std::atomic<int64_t> last_access_time_;
     std::thread worker_thread_;
 };

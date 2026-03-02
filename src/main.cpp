@@ -9,6 +9,7 @@
 // spdlog headers
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 // 初始化 CUDA 设备，设置同步模式为阻塞同步，避免 CPU 自旋等待
 void initCudaDevice()
@@ -61,11 +62,15 @@ int main()
         spdlog::warn("Could not create logs directory: {}", e.what());
     }
 
-    // initialize basic file logger (thread-safe)
-    auto file_logger = spdlog::basic_logger_mt("rtsp_logger", "logs/server.log");
-    file_logger->flush_on(spdlog::level::info);
-    spdlog::set_default_logger(file_logger);
-    spdlog::set_level(spdlog::level::info); // change as needed
+    // initialize multi-sink logger (console + file)
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("logs/server.log", true);
+    
+    std::vector<spdlog::sink_ptr> sinks{console_sink, file_sink};
+    auto logger = std::make_shared<spdlog::logger>("rtsp_logger", sinks.begin(), sinks.end());
+    logger->flush_on(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+    spdlog::set_level(spdlog::level::info);
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
 
     grpc::ServerBuilder builder;

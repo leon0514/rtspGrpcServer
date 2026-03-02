@@ -1,29 +1,120 @@
-from remote_video_capture import RemoteVideoCapture
-from stream_service_pb2 import DECODER_CPU_OPENCV, DECODER_GPU_CUDA,DECODER_FFMPEG_NATIVE
-import time
+"""
+RTSP gRPC 客户端示例
+"""
 import cv2
+import time
+from remote_capture import (
+    RemoteCapture, 
+    DECODER_GPU_CUDA,
+    DECODER_CPU_OPENCV,
+    DECODER_FFMPEG_NATIVE,
+    STATUS_CONNECTING,
+    STATUS_CONNECTED,
+    STATUS_DISCONNECTED,
+    STATUS_NOT_FOUND,
+    STATUS_NAMES
+)
 
-if __name__ == '__main__':
-    url = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/801"
-    with RemoteVideoCapture(url, decode_interval_ms=1000, decoder_type=DECODER_FFMPEG_NATIVE, gpu_id=0) as cap:
-        while not cap.is_connected():
-            print("摄像头暂时未连接成功，后台正尝试重连...")
-            time.sleep(2)
-            
-        print("▶️ 开始拉取画面...")
+SERVER = "127.0.0.1:50052"
+RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/801"
 
+
+def example_list_streams():
+    """示例1: 获取所有流信息"""
+    print("=" * 50)
+    print("示例1: 获取所有流信息")
+    print("=" * 50)
+    
+    with RemoteCapture(SERVER) as client:
+        streams = client.list_streams()
+        print(f"流总数: {len(streams)}\n")
         
-        index = 0
+        for s in streams:
+            print(f"ID: {s['stream_id'][:8]}...")
+            print(f"  URL:    {s['rtsp_url']}")
+            print(f"  状态:   {s['status_name']}")
+            print(f"  解码器: {s['decoder_type']}")
+            print(f"  分辨率: {s['width']}x{s['height']}")
+            print()
+
+
+def example_poll_frame():
+    """示例2: 主动请求获取帧"""
+    print("=" * 50)
+    print("示例2: 主动请求获取帧")
+    print("=" * 50)
+    
+    with RemoteCapture(SERVER) as client:
+        # 启动流
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_CUDA)
+        if not stream_id:
+            return
+        
+        print(f"流已启动: {stream_id[:8]}...")
+        
+        # 等待连接成功
+        for i in range(10):
+            if client.get_stream_status(stream_id) == STATUS_CONNECTED:
+                print("连接成功")
+                break
+            print(f"等待连接... ({i+1}/10)")
+            time.sleep(1)
+        
+        if client.get_stream_status(stream_id) != STATUS_CONNECTED:
+            print("连接失败")
+            return
+
         while True:
-            ret, frame = cap.read()
+            ret, frame = client.read(stream_id)
             if ret:
-                # 成功取到画面
-                filename = f"capture_{index}.jpg"
-                cv2.imwrite(filename, frame)
-                print(f"已保存: {filename}")
+                cv2.imwrite("capture.jpg", frame)
             else:
-                print("未取到画面")
-                time.sleep(0.05)
-            index += 1
-            time.sleep(2)
+                status = client.get_stream_status(stream_id)
+                if status == STATUS_DISCONNECTED or status == STATUS_NOT_FOUND:
+                    print("连接已断开")
+                    break
+                print(f"获取帧失败, 状态: {STATUS_NAMES[status]}")
                 
+        client.stop_stream(stream_id)
+        print("流已停止")
+
+
+def example_stream_frames():
+    """示例3: 流式传输获取帧"""
+    print("=" * 50)
+    print("示例3: 流式传输获取帧")
+    print("=" * 50)
+    
+    with RemoteCapture(SERVER) as client:
+        # 启动流
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_CUDA)
+        if not stream_id:
+            return
+        
+        print(f"流已启动: {stream_id[:8]}...")
+        time.sleep(2)
+        
+        frame_count = 0
+        start = time.time()
+        
+        for ret, frame in client.stream_frames(stream_id, max_fps=15):
+            if ret:
+                frame_count += 1
+                cv2.imshow("Stream Mode", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        
+        fps = frame_count / (time.time() - start)
+        print(f"\n接收 {frame_count} 帧, 平均 {fps:.1f} FPS")
+        
+        cv2.destroyAllWindows()
+        client.stop_stream(stream_id)
+        print("流已停止")
+
+
+if __name__ == "__main__":
+    # 运行示例 (取消注释需要运行的示例)
+    
+    # example_list_streams()
+    example_poll_frame()
+    # example_stream_frames()
