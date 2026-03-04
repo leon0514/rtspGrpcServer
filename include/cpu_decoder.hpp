@@ -35,10 +35,10 @@ private:
 
 private:
     std::string last_url_;    // 保存 URL 供后续重连使用
-    int frames_to_skip_ = 5;  // 待丢弃帧计数（CPU端通常不需要丢弃太多）
+    int frames_to_skip_ = 15;  // 待丢弃帧计数（CPU端通常不需要丢弃太多）
     bool is_opened_ = false;
 
-    // FFMPEG 模块
+    
     std::shared_ptr<FFHDDemuxer::FFmpegDemuxer> demuxer_;
     std::shared_ptr<FFHDDecoder::FFmpegDecoder> decoder_;
 

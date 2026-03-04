@@ -1,6 +1,6 @@
 #include "ffmpeg_decoder.hpp"
 #include <iostream>
-#include "simple-logger.hpp" // 假设你有这个头文件
+#include "simple-logger.hpp"
 
 using namespace std;
 
@@ -126,8 +126,6 @@ namespace FFHDDecoder {
         bool convert_to_bgr(AVFrame* frame, uint8_t* bgr_buffer, int bgr_linesize) override {
             if (!frame || !bgr_buffer) return false;
 
-            // 1. 修复 swscale "deprecated pixel format used" 警告
-            // FFmpeg 废弃了 YUVJ 格式，我们需要将其静默映射为标准的 YUV 格式
             AVPixelFormat src_fmt = (AVPixelFormat)frame->format;
             switch (src_fmt) {
                 case AV_PIX_FMT_YUVJ420P: src_fmt = AV_PIX_FMT_YUV420P; break;

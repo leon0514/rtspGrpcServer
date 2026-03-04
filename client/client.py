@@ -49,7 +49,7 @@ def example_poll_frame():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_OPENCV)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID)
         if not stream_id:
             return
         
@@ -90,7 +90,7 @@ def example_stream_frames():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID)
         if not stream_id:
             return
         
