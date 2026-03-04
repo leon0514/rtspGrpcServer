@@ -1,23 +1,19 @@
-#include "decoder_factory.h"
-#include "opencv_decoder.h"
-#include "cuda_decoder.h"
-#include "ffmpeg_decoder.h"
+#include "decoder_factory.hpp"
+#include "cuda_decoder.hpp"
+#include "cpu_decoder.hpp"
 #include <iostream>
 
 std::unique_ptr<IVideoDecoder> DecoderFactory::create(streamingservice::DecoderType type, int gpu_id)
 {
     switch (type)
     {
-    case streamingservice::DECODER_CPU_OPENCV:
-        return std::make_unique<OpencvDecoder>();
+    case streamingservice::DECODER_CPU_FFMPEG:
+        return std::make_unique<CpuDecoder>();
 
-    case streamingservice::DECODER_GPU_CUDA:
+    case streamingservice::DECODER_GPU_NVCUVID:
         return std::make_unique<CudaDecoder>(gpu_id);
-
-    case streamingservice::DECODER_FFMPEG_NATIVE:
-        return std::make_unique<FFmpegDecoder>();
         
     default:
-        return std::make_unique<OpencvDecoder>();
+        return std::make_unique<CpuDecoder>();
     }
 }

@@ -1,4 +1,4 @@
-#include "opencv_encoder.h"
+#include "opencv_encoder.hpp"
 #include <vector>
 
 OpencvEncoder::OpencvEncoder(int quality) : quality_(quality) {}

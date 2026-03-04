@@ -5,9 +5,8 @@ import cv2
 import time
 from remote_capture import (
     RemoteCapture, 
-    DECODER_GPU_CUDA,
-    DECODER_CPU_OPENCV,
-    DECODER_FFMPEG_NATIVE,
+    DECODER_GPU_NVCUVID,
+    DECODER_CPU_FFMPEG,
     STATUS_CONNECTING,
     STATUS_CONNECTED,
     STATUS_DISCONNECTED,
@@ -18,9 +17,9 @@ from remote_capture import (
 import os
 
 # default address can still be overridden via environment var
-SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50051")
+SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50052")
 RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
-RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501"
+# RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501"
 
 
 def example_list_streams():
@@ -50,7 +49,7 @@ def example_poll_frame():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_CUDA)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_OPENCV)
         if not stream_id:
             return
         
@@ -91,7 +90,7 @@ def example_stream_frames():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_CUDA)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG)
         if not stream_id:
             return
         
@@ -109,6 +108,7 @@ def example_stream_frames():
             if ret:
                 frame_count += 1
                 print(f"接收帧: {frame_count}")
+                cv2.imwrite(f"images/capture_{frame_count}.jpg", frame)
             else:
                 status = client.get_stream_status(stream_id)
                 if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):

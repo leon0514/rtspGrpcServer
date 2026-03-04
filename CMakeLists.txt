@@ -99,10 +99,10 @@ set(SRC_FILES
     src/rtsp_service.cpp
     src/stream_task.cpp
     src/decoder_factory.cpp
-    src/opencv_encoder.cpp
+    src/cpu_decoder.cpp
+    src/ffmpeg_decoder.cpp
     src/nvjpeg_encoder.cpp   # GPU JPEG 编码器
-    src/opencv_decoder.cpp
-    src/ffmpeg_decoder.cpp   # FFmpeg 原生软解码器
+    src/opencv_encoder.cpp
     src/ffmpeg_demuxer.cpp
     src/cuda_tools.cpp
     src/cuvid_decoder.cpp

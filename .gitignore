@@ -1,5 +1,5 @@
 client/__pycache__
-client/*.jpg
+client/images/
 build/
 *.tar
 *.tar.gz

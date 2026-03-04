@@ -1,6 +1,6 @@
 #pragma once
 #include <memory>
-#include "interfaces.h"
+#include "interfaces.hpp"
 #include "stream_service.grpc.pb.h"
 
 class DecoderFactory {

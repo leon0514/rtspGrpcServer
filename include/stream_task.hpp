@@ -5,7 +5,7 @@
 #include <atomic>
 #include <memory>
 #include <opencv2/opencv.hpp>
-#include "interfaces.h"
+#include "interfaces.hpp"
 
 // 流连接状态
 enum class StreamStatus {

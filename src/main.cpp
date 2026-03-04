@@ -3,7 +3,7 @@
 #include <filesystem> // for log directory creation
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
-#include "rtsp_service.h"
+#include "rtsp_service.hpp"
 #include <cuda_runtime.h>
 
 // spdlog headers

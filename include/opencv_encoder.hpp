@@ -1,5 +1,5 @@
 #pragma once
-#include "interfaces.h"
+#include "interfaces.hpp"
 #include <opencv2/opencv.hpp>
 
 class OpencvEncoder : public IImageEncoder {

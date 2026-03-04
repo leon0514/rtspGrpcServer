@@ -1,5 +1,5 @@
 #pragma once
-#include "interfaces.h"
+#include "interfaces.hpp"
 #include <opencv2/opencv.hpp>
 #include <nvjpeg.h>
 #include <cuda_runtime.h>

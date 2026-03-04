@@ -1,4 +1,4 @@
-#include "cuda_decoder.h"
+#include "cuda_decoder.hpp"
 #include <cuda_runtime.h>
 #include <thread>
 #include <chrono>

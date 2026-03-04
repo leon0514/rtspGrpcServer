@@ -1,4 +1,4 @@
-#include "nvjpeg_encoder.h"
+#include "nvjpeg_encoder.hpp"
 #include <spdlog/spdlog.h>
 
 #define CHECK_NVJPEG(call) \

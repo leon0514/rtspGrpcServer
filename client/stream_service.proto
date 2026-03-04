@@ -4,9 +4,8 @@ package streamingservice;
 
 // 定义支持的解码器类型
 enum DecoderType {
-    DECODER_CPU_OPENCV = 0;   // 默认：使用 CPU OpenCV 解码
-    DECODER_GPU_CUDA = 1;     // 预留：使用 Nvidia CUDA 硬件解码
-    DECODER_FFMPEG_NATIVE = 2;// 预留：使用 FFmpeg 原生解码
+    DECODER_CPU_FFMPEG = 0;   // 默认：使用 CPU OpenCV 解码
+    DECODER_GPU_NVCUVID = 1;     // 预留：使用 Nvidia CUDA 硬件解码
 }
 
 // 流连接状态

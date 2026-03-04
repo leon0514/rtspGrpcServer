@@ -45,9 +45,8 @@ docker run -itd --gpus '"device=1"' -e NVIDIA_DRIVER_CAPABILITIES=compute,utilit
 ### 解码器类型 (DecoderType)
 | 值 | 名称 | 说明 |
 |----|------|------|
-| 0 | DECODER_CPU_OPENCV | OpenCV 软解 |
-| 1 | DECODER_GPU_CUDA | NVIDIA CUDA 硬解 |
-| 2 | DECODER_FFMPEG_NATIVE | FFmpeg 软解 |
+| 0 | DECODER_CPU_FFMPEG | FFmpeg 软解 |
+| 1 | DECODER_GPU_NVCUVID | NVIDIA CUDA 硬解 |
 
 ### 流状态 (StreamStatus)
 | 值 | 名称 | 说明 |
@@ -288,7 +287,8 @@ import cv2
 import time
 from remote_capture import (
     RemoteCapture,
-    DECODER_GPU_CUDA,
+    DECODER_CPU_FFMPEG,
+    DECODER_GPU_NVCUVID,
     STATUS_CONNECTED,
     STATUS_NAMES
 )

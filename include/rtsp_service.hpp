@@ -6,8 +6,8 @@
 #include <atomic>
 #include <grpcpp/grpcpp.h>
 #include "stream_service.grpc.pb.h"
-#include "stream_task.h"
-#include "interfaces.h"
+#include "stream_task.hpp"
+#include "interfaces.hpp"
 
 class RTSPServiceImpl final : public streamingservice::RTSPStreamService::Service {
 public:

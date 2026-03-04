@@ -15,15 +15,13 @@ import stream_service_pb2_grpc
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 解码器类型常量
-DECODER_CPU_OPENCV = stream_service_pb2.DECODER_CPU_OPENCV
-DECODER_GPU_CUDA = stream_service_pb2.DECODER_GPU_CUDA
-DECODER_FFMPEG_NATIVE = stream_service_pb2.DECODER_FFMPEG_NATIVE
+DECODER_CPU_FFMPEG = stream_service_pb2.DECODER_CPU_FFMPEG
+DECODER_GPU_NVCUVID = stream_service_pb2.DECODER_GPU_NVCUVID
 
 # 解码器类型名称映射
 DECODER_NAMES = {
-    DECODER_CPU_OPENCV: "CPU (OpenCV)",
-    DECODER_GPU_CUDA: "GPU (CUDA)",
-    DECODER_FFMPEG_NATIVE: "FFmpeg Native"
+    DECODER_CPU_FFMPEG: "CPU (FFmpeg)",
+    DECODER_GPU_NVCUVID: "GPU (NVCUVID)"
 }
 
 # 流状态常量
@@ -113,7 +111,7 @@ class RemoteCapture:
                      rtsp_url: str,
                      heartbeat_timeout_ms: int = 10000,
                      decode_interval_ms: int = 0,
-                     decoder_type: int = DECODER_CPU_OPENCV,
+                     decoder_type: int = DECODER_CPU_FFMPEG,
                      gpu_id: int = 0,
                      keep_on_failure: bool = False) -> Optional[str]:
         """

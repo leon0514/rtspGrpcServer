@@ -1,8 +1,8 @@
-#include "rtsp_service.h"
-#include "decoder_factory.h"
-#include "opencv_encoder.h"
-#include "nvjpeg_encoder.h"
-#include "utils.h"
+#include "rtsp_service.hpp"
+#include "decoder_factory.hpp"
+#include "opencv_encoder.hpp"
+#include "nvjpeg_encoder.hpp"
+#include "utils.hpp"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/ostr.h> // support for logging user-defined types if needed
@@ -67,7 +67,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     auto decoder_type = request->decoder_type();
     int gpu_id = request->gpu_id();  // 默认为 0
     // 0 opencv 1 gpu 2 ffmpeg
-    std::string decode_type_str = (decoder_type == streamingservice::DECODER_CPU_OPENCV) ? "OpenCV" : (decoder_type == streamingservice::DECODER_GPU_CUDA) ? "GPU" : "FFmpeg";
+    std::string decode_type_str = (decoder_type == streamingservice::DECODER_CPU_FFMPEG) ? "FFmpeg" : (decoder_type == streamingservice::DECODER_GPU_NVCUVID) ? "GPU" : "UNKONW";
     spdlog::info("Decoder type: {}, GPU ID: {}", decode_type_str, gpu_id);
     auto decoder = DecoderFactory::create(decoder_type, gpu_id);
     if (!decoder)
@@ -80,7 +80,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     // 3. 创建编码器 (Encoder)
     // GPU 解码时使用 NVJPEG GPU 编码器，CPU 解码时使用 OpenCV
     std::shared_ptr<IImageEncoder> encoder;
-    if (decoder_type == streamingservice::DECODER_GPU_CUDA)
+    if (decoder_type == streamingservice::DECODER_GPU_NVCUVID)
     {
         encoder = std::make_shared<NvjpegEncoder>(85);
         spdlog::info("Using NVJPEG GPU encoder");
