@@ -30,13 +30,13 @@ bool CudaDecoder::open(const std::string &url)
             // bUseDeviceFrame = true: 数据保留在 GPU，减少不必要的拷贝
             // output_bgr = true: 在 GPU 上完成 NV12→BGR 转换
             decoder_ = FFHDDecoder::create_cuvid_decoder(
-                true,   // bUseDeviceFrame = true
+                true, // bUseDeviceFrame = true
                 FFHDDecoder::ffmpeg2NvCodecId(demuxer_->get_video_codec()),
-                4,     // max_cache
+                4,       // max_cache
                 gpu_id_, // gpu_id
                 nullptr,
                 nullptr,
-                true);  // output_bgr = true
+                true); // output_bgr = true
 
             if (!decoder_)
             {
@@ -77,7 +77,7 @@ bool CudaDecoder::reconnect()
     release();
     // 简单的重连逻辑：尝试重新 open
     for (int i = 0; i < 3; ++i)
-    { // 尝试3次
+    {
         if (open(last_url_))
         {
             spdlog::info("[INFO] Reconnection successful.");
@@ -137,7 +137,7 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
         return false;
 
     // 保存 GPU 帧指针
-    last_gpu_frame_ptr_ = static_cast<uint8_t*>(gpu_ptr);
+    last_gpu_frame_ptr_ = static_cast<uint8_t *>(gpu_ptr);
 
     if (need_data && frames_to_skip_ > 0)
     {
@@ -159,29 +159,29 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
         int width = decoder_->get_width();
         int height = decoder_->get_height();
         int frame_bytes = decoder_->get_frame_bytes();
-        
+
         // 防御编程：视频格式尚未解析时跳过
         if (width == 0 || height == 0 || frame_bytes == 0)
         {
-            spdlog::warn("Video format not yet parsed, width={}, height={}, frame_bytes={}", 
+            spdlog::warn("Video format not yet parsed, width={}, height={}, frame_bytes={}",
                          width, height, frame_bytes);
             decoded_frames_available_--;
             return false;
         }
-        
+
         // 调试信息
-        // spdlog::info("Frame info: {}x{}, frame_bytes={}, expected_bgr_bytes={}", 
+        // spdlog::info("Frame info: {}x{}, frame_bytes={}, expected_bgr_bytes={}",
         //              width, height, frame_bytes, width * height * 3);
-        
+
         // 使用解码器报告的实际大小
-        frame.create(height, width, CV_8UC3);
-        cudaError_t err = cudaMemcpy(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost);
-        if (err != cudaSuccess)
-        {
-            spdlog::error("cudaMemcpy failed: {}", cudaGetErrorString(err));
-            decoded_frames_available_--;
-            return false;
-        }
+        // frame.create(height, width, CV_8UC3);
+        // cudaError_t err = cudaMemcpy(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost);
+        // if (err != cudaSuccess)
+        // {
+        //     spdlog::error("cudaMemcpy failed: {}", cudaGetErrorString(err));
+        //     decoded_frames_available_--;
+        //     return false;
+        // }
     }
 
     decoded_frames_available_--;
@@ -201,7 +201,20 @@ int CudaDecoder::getHeight() const
 void CudaDecoder::release()
 {
     is_opened_ = false;
-    decoder_.reset();
-    demuxer_.reset();
+    
+    // 🔧 关键修复：确保 decoder 和 demuxer 被彻底释放
+    // shared_ptr::reset() 会调用引用计数，当计数为 0 时会自动调用析构函数
+    if (decoder_)
+    {
+        decoder_.reset();
+        decoder_ = nullptr;
+    }
+    if (demuxer_)
+    {
+        demuxer_.reset();
+        demuxer_ = nullptr;
+    }
+    
     decoded_frames_available_ = 0;
+    last_gpu_frame_ptr_ = nullptr;
 }

@@ -15,7 +15,7 @@ bool CpuDecoder::open(const std::string &url)
 
     for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
     {
-        // 每次尝试前先清理资源
+        // 🔧 关键修复：每次尝试前先彻底清理资源，防止重连时泄漏
         release();
 
         // 1. 创建解封装器

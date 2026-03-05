@@ -63,10 +63,11 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     }
 
     auto decoder_type = request->decoder_type();
-    int gpu_id = request->gpu_id();  
-    std::string decode_type_str = (decoder_type == streamingservice::DECODER_CPU_FFMPEG) ? "FFmpeg" : (decoder_type == streamingservice::DECODER_GPU_NVCUVID) ? "GPU" : "UNKONW";
+    int gpu_id = request->gpu_id();
+    std::string decode_type_str = (decoder_type == streamingservice::DECODER_CPU_FFMPEG) ? "FFmpeg" : (decoder_type == streamingservice::DECODER_GPU_NVCUVID) ? "GPU"
+                                                                                                                                                              : "UNKONW";
     spdlog::info("Decoder type: {}, GPU ID: {}", decode_type_str, gpu_id);
-    
+
     auto decoder = DecoderFactory::create(decoder_type, gpu_id);
     if (!decoder)
     {
@@ -84,7 +85,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     else
     {
         // 降低 CPU JPEG 质量到 75，防止 CPU 飙升
-        encoder = std::make_shared<OpencvEncoder>(75); 
+        encoder = std::make_shared<OpencvEncoder>(75);
         spdlog::info("Using OpenCV CPU encoder");
     }
 
@@ -93,10 +94,10 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         request->heartbeat_timeout_ms(),
         request->decode_interval_ms(),
         static_cast<int>(decoder_type),
+        gpu_id,
         request->keep_on_failure(),
         std::move(decoder),
-        encoder
-    );
+        encoder);
 
     std::string stream_id = generate_uuid();
 
@@ -106,7 +107,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         {
             if (pair.second->getUrl() == req_url)
             {
-                task->stop(); 
+                task->stop();
                 response->set_success(true);
                 response->set_stream_id(pair.first);
                 response->set_message("Stream created by another request concurrently.");
@@ -139,13 +140,13 @@ grpc::Status RTSPServiceImpl::StopStream(grpc::ServerContext *context, const str
         if (it != streams_.end())
         {
             task_to_stop = it->second;
-            streams_.erase(it); 
+            streams_.erase(it);
         }
     }
 
     if (task_to_stop)
     {
-        task_to_stop->stop(); 
+        task_to_stop->stop();
         spdlog::info("[STOP] Stream manually stopped: {}", stream_id);
         response->set_success(true);
         response->set_message("Stream stopped successfully");
@@ -186,7 +187,7 @@ grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const
     if (task->getLatestEncodedFrame(buffer))
     {
         response->set_success(true);
-        response->set_image_data(buffer); 
+        response->set_image_data(buffer);
         response->set_message("OK");
     }
     else
@@ -200,13 +201,13 @@ grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const
 // =============================================================
 // StreamFrames：【深度优化】条件变量流式传输视频帧
 // =============================================================
-grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context, 
-                                            const streamingservice::StreamRequest *request, 
-                                            grpc::ServerWriter<streamingservice::FrameResponse>* writer)
+grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
+                                           const streamingservice::StreamRequest *request,
+                                           grpc::ServerWriter<streamingservice::FrameResponse> *writer)
 {
     std::string stream_id = request->stream_id();
     int max_fps = request->max_fps();
-    
+
     std::shared_ptr<StreamTask> task;
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
@@ -239,9 +240,13 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
 
     spdlog::info("[STREAM] Client connected to stream: {}, max_fps: {}", stream_id, max_fps);
 
+    std::string encoded_frame;
+    encoded_frame.reserve(1024 * 1024); // 预留 1MB 容量
+    streamingservice::FrameResponse response;
     while (!context->IsCancelled())
     {
-        if (task->isStopped()) {
+        if (task->isStopped())
+        {
             streamingservice::FrameResponse response;
             response.set_success(false);
             response.set_message("Stream has been stopped");
@@ -249,12 +254,13 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
             break;
         }
 
-        std::string encoded_frame;
+        // std::string encoded_frame;
         // 【核心优化】阻塞等待新帧最多 500ms。如果有新帧立马唤醒，毫无延迟和 CPU 空转。
         // timeout 是为了定期循环判断 context->IsCancelled() 以便安全退出
         bool has_new_frame = task->waitForNextFrame(encoded_frame, client_seq, 500);
 
-        if (!has_new_frame) {
+        if (!has_new_frame)
+        {
             continue; // 超时或未获取到，继续循环
         }
 
@@ -273,9 +279,10 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
         }
 
         // 组装并发送数据包
-        streamingservice::FrameResponse response;
+
         response.set_success(true);
-        response.set_image_data(std::move(encoded_frame)); // 优化：使用 move 避免额外拷贝
+        // response.set_image_data(std::move(encoded_frame)); // 优化：使用 move 避免额外拷贝
+        response.set_image_data(encoded_frame);
         response.set_message("OK");
 
         if (!writer->Write(response))
@@ -300,7 +307,8 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
         auto it = streams_.find(stream_id);
-        if (it != streams_.end()) task = it->second;
+        if (it != streams_.end())
+            task = it->second;
     }
 
     if (task)
@@ -311,12 +319,18 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
         response->set_width(task->getWidth());
         response->set_height(task->getHeight());
         response->set_decode_interval_ms(task->getDecodeIntervalMs());
-        
+
         switch (task->getStatus())
         {
-            case StreamStatus::CONNECTED: response->set_message("已连接"); break;
-            case StreamStatus::CONNECTING: response->set_message("连接中"); break;
-            case StreamStatus::DISCONNECTED: response->set_message("无法连接"); break;
+        case StreamStatus::CONNECTED:
+            response->set_message("已连接");
+            break;
+        case StreamStatus::CONNECTING:
+            response->set_message("连接中");
+            break;
+        case StreamStatus::DISCONNECTED:
+            response->set_message("无法连接");
+            break;
         }
     }
     else
@@ -363,7 +377,7 @@ void RTSPServiceImpl::cleanupLoop()
             {
                 bool should_remove = false;
                 std::string reason;
-                
+
                 if (it->second->isStopped() && !it->second->shouldKeepOnFailure())
                 {
                     should_remove = true;
@@ -374,7 +388,7 @@ void RTSPServiceImpl::cleanupLoop()
                     should_remove = true;
                     reason = "TIMEOUT";
                 }
-                
+
                 if (should_remove)
                 {
                     spdlog::info("[{}] Auto-cleaning stream ID: {}", reason, it->first);

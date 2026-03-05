@@ -22,6 +22,7 @@ public:
                int heartbeat_timeout_ms,
                int decode_interval_ms,
                int decoder_type,
+               int gpu_id,
                bool keep_on_failure,
                std::unique_ptr<IVideoDecoder> decoder,
                std::shared_ptr<IImageEncoder> encoder);
@@ -76,6 +77,7 @@ private:
     int decode_interval_ms_;
     int decoder_type_;
     bool keep_on_failure_;
+    int gpu_id_ = -1;
 
     std::unique_ptr<IVideoDecoder> decoder_;
     std::shared_ptr<IImageEncoder> encoder_;
@@ -106,4 +108,9 @@ private:
 
     std::condition_variable frame_cv_;
     uint64_t frame_seq_{0};
+
+    // 用于 CPU 路径的图像缓存，避免反复分配 cv::Mat
+    cv::Mat reusable_frame_; 
+    // 用于接收编码后 JPEG 数据的缓存，保留 capacity 避免反复 new 内存
+    std::string reusable_encode_buffer_;
 };
