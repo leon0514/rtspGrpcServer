@@ -2,7 +2,10 @@
 #include <iostream>
 #include <string>
 #include <memory>
-#include "simple-logger.hpp" // 假设你有对应的头文件
+#include <vector>
+#include <mutex>
+#include <cstring>
+#include "simple-logger.hpp"
 
 extern "C"
 {
@@ -16,6 +19,7 @@ using namespace std;
 
 namespace FFHDDemuxer
 {
+    // 检查FFmpeg返回值的工具函数
     static inline bool check_ffmpeg_retvalue(int e, const char *call, int iLine, const char *szFile)
     {
         if (e < 0)
@@ -28,6 +32,7 @@ namespace FFHDDemuxer
 
 #define checkFFMPEG(call) check_ffmpeg_retvalue(call, #call, __LINE__, __FILE__)
 
+    // 判断字符串开头工具函数
     static bool string_begin_with(const string &str, const string &with)
     {
         if (str.size() < with.size())
@@ -43,7 +48,6 @@ namespace FFHDDemuxer
         FFmpegDemuxerImpl()
         {
             avformat_network_init();
-            // 兼容 FFmpeg 新版本：必须动态分配 AVPacket
             m_pkt = av_packet_alloc();
             m_pktFiltered = av_packet_alloc();
         }
@@ -58,7 +62,7 @@ namespace FFHDDemuxer
             avformat_network_deinit();
         }
 
-        bool open(const string &uri, bool auto_reboot = true, int64_t timescale = 1000 /*Hz*/)
+        bool open(const string &uri, bool auto_reboot = true, int64_t timescale = 1000)
         {
             close();
             this->uri_opened_ = uri;
@@ -81,7 +85,7 @@ namespace FFHDDemuxer
         bool reopen() override
         {
             if (m_pDataProvider)
-                return false; // 内存流不支持自动重新打开
+                return false;
             if (!flag_is_opened_)
                 return false;
 
@@ -102,11 +106,13 @@ namespace FFHDDemuxer
             if (m_bsfc)
             {
                 av_bsf_free(&m_bsfc);
+                m_bsfc = nullptr;
             }
 
             if (m_fmtc)
             {
-                avformat_close_input(&m_fmtc); // 内部会自动将 m_fmtc 置 nullptr
+                avformat_close_input(&m_fmtc);
+                m_fmtc = nullptr;
             }
 
             if (m_avioc)
@@ -116,13 +122,16 @@ namespace FFHDDemuxer
                     av_freep(&m_avioc->buffer);
                 }
                 avio_context_free(&m_avioc);
+                m_avioc = nullptr;
             }
 
-            if (m_pDataWithHeader)
-            {
-                av_free(m_pDataWithHeader);
-                m_pDataWithHeader = nullptr;
-            }
+            // if (m_pDataWithHeader)
+            // {
+            //     av_free(m_pDataWithHeader);
+            //     m_pDataWithHeader = nullptr;
+            // }
+            m_pDataWithHeader.clear();
+            m_pDataWithHeader.shrink_to_fit();
             flag_is_opened_ = false;
         }
 
@@ -139,7 +148,6 @@ namespace FFHDDemuxer
         {
             if (m_fmtc && m_iVideoStream >= 0)
             {
-                // 修复：废弃的 codec 替换为 codecpar
                 *ppData = m_fmtc->streams[m_iVideoStream]->codecpar->extradata;
                 *bytes = m_fmtc->streams[m_iVideoStream]->codecpar->extradata_size;
             }
@@ -162,22 +170,20 @@ namespace FFHDDemuxer
             int retries = 0;
             int64_t local_pts = 0;
 
-            // 外层循环：为了处理断线重连 以及 BSF 需要多帧 (EAGAIN) 的情况
             while (true)
             {
-                av_packet_unref(m_pkt); // 清理旧包
+                av_packet_unref(m_pkt);
 
                 int e = av_read_frame(m_fmtc, m_pkt);
                 if (e >= 0)
                 {
                     if (m_pkt->stream_index != m_iVideoStream)
                     {
-                        continue; // 非视频帧，继续读取
+                        continue;
                     }
                 }
                 else
                 {
-                    // 读取失败（EOF或网络断开）
                     av_packet_unref(m_pkt);
                     if (retries < max_retries)
                     {
@@ -189,9 +195,9 @@ namespace FFHDDemuxer
                         }
                         is_reboot_ = true;
                         retries++;
-                        continue; // 重连成功，重新尝试读取
+                        continue;
                     }
-                    return false; // 重试次数耗尽或不启用重连
+                    return false;
                 }
 
                 if (iskey_frame)
@@ -201,32 +207,32 @@ namespace FFHDDemuxer
 
                 if (m_bMp4H264 || m_bMp4HEVC)
                 {
-                    av_packet_unref(m_pktFiltered); // 确保干净
+                    av_packet_unref(m_pktFiltered);
 
                     int send_ret = av_bsf_send_packet(m_bsfc, m_pkt);
                     if (send_ret < 0)
                     {
                         av_packet_unref(m_pkt);
-                        continue; // 送入滤镜失败，尝试读取下一帧
+                        continue;
                     }
 
                     int recv_ret = av_bsf_receive_packet(m_bsfc, m_pktFiltered);
                     if (recv_ret == 0)
                     {
-                        // 成功过滤出一帧
                         *ppVideo = m_pktFiltered->data;
                         *pnVideoBytes = m_pktFiltered->size;
                         local_pts = (int64_t)(m_pktFiltered->pts * m_userTimeScale * m_timeBase);
-                        break; // 成功获取数据，跳出大循环
+                        break;
                     }
                     else if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
                     {
-                        // 滤镜需要更多输入，继续拉取下一帧送入
                         continue;
                     }
                     else
                     {
                         INFOE("Error during bitstream filtering");
+                        av_packet_unref(m_pkt);
+                        av_packet_unref(m_pktFiltered);
                         return false;
                     }
                 }
@@ -237,17 +243,38 @@ namespace FFHDDemuxer
                         int extraDataSize = m_fmtc->streams[m_iVideoStream]->codecpar->extradata_size;
                         if (extraDataSize > 0)
                         {
-                            m_pDataWithHeader = (uint8_t *)av_malloc(extraDataSize + m_pkt->size - 3 * sizeof(uint8_t));
-                            if (!m_pDataWithHeader)
-                            {
-                                INFOE("FFmpeg error, m_pDataWithHeader alloc failed");
-                                return false;
-                            }
-                            memcpy(m_pDataWithHeader, m_fmtc->streams[m_iVideoStream]->codecpar->extradata, extraDataSize);
-                            memcpy(m_pDataWithHeader + extraDataSize, m_pkt->data + 3, m_pkt->size - 3 * sizeof(uint8_t));
+                            // if (m_pDataWithHeader)
+                            // {
+                            //     av_free(m_pDataWithHeader);
+                            //     m_pDataWithHeader = nullptr;
+                            // }
+                            // m_pDataWithHeader = (uint8_t *)av_malloc(extraDataSize + m_pkt->size - 3 * sizeof(uint8_t));
+                            // if (!m_pDataWithHeader)
+                            // {
+                            //     INFOE("FFmpeg error, m_pDataWithHeader alloc failed");
+                            //     return false;
+                            // }
+                            // memcpy(m_pDataWithHeader, m_fmtc->streams[m_iVideoStream]->codecpar->extradata, extraDataSize);
+                            // memcpy(m_pDataWithHeader + extraDataSize, m_pkt->data + 3, m_pkt->size - 3 * sizeof(uint8_t));
 
-                            *ppVideo = m_pDataWithHeader;
-                            *pnVideoBytes = extraDataSize + m_pkt->size - 3 * sizeof(uint8_t);
+                            // *ppVideo = m_pDataWithHeader;
+                            // *pnVideoBytes = extraDataSize + m_pkt->size - 3 * sizeof(uint8_t);
+
+                            int total_size = extraDataSize + m_pkt->size - 3 * sizeof(uint8_t);
+
+                            // 自动分配内存，无需手动 free
+                            m_pDataWithHeader.resize(total_size);
+
+                            memcpy(m_pDataWithHeader.data(),
+                                   m_fmtc->streams[m_iVideoStream]->codecpar->extradata,
+                                   extraDataSize);
+
+                            memcpy(m_pDataWithHeader.data() + extraDataSize,
+                                   m_pkt->data + 3,
+                                   m_pkt->size - 3 * sizeof(uint8_t));
+
+                            *ppVideo = m_pDataWithHeader.data();
+                            *pnVideoBytes = total_size;
                         }
                     }
                     else
@@ -256,9 +283,9 @@ namespace FFHDDemuxer
                         *pnVideoBytes = m_pkt->size;
                     }
                     local_pts = (int64_t)(m_pkt->pts * m_userTimeScale * m_timeBase);
-                    break; // 成功获取数据，跳出大循环
+                    break;
                 }
-            } // while(true) end
+            }
 
             if (pts)
                 *pts = local_pts;
@@ -280,7 +307,7 @@ namespace FFHDDemuxer
             return r.num == 0 || r.den == 0 ? 0. : (double)r.num / (double)r.den;
         }
 
-        bool open(AVFormatContext *fmtc, int64_t timeScale = 1000 /*Hz*/)
+        bool open(AVFormatContext *fmtc, int64_t timeScale = 1000)
         {
             if (!fmtc)
             {
@@ -399,12 +426,11 @@ namespace FFHDDemuxer
             }
 
             m_pDataProvider = pDataProvider;
-            m_avioc = avio_alloc_context(avioc_buffer, avioc_buffer_size,
-                                         0, pDataProvider.get(), &ReadPacket, nullptr, nullptr);
+            m_avioc = avio_alloc_context(avioc_buffer, avioc_buffer_size, 0, pDataProvider.get(), &ReadPacket, nullptr, nullptr);
             if (!m_avioc)
             {
                 INFOE("FFmpeg error alloc avio context");
-                av_free(avioc_buffer); // 修复泄漏1
+                av_free(avioc_buffer);
                 avformat_free_context(ctx);
                 return nullptr;
             }
@@ -413,9 +439,9 @@ namespace FFHDDemuxer
             if (avformat_open_input(&ctx, nullptr, nullptr, nullptr) < 0)
             {
                 INFOE("FFmpeg avformat_open_input failed");
-                // 修复泄漏2: ctx 内部会处理自身，但我们在外部分配的 buffer/avio 需要手动释放
                 av_free(avioc_buffer);
                 avio_context_free(&m_avioc);
+                avformat_free_context(ctx);
                 return nullptr;
             }
 
@@ -453,8 +479,8 @@ namespace FFHDDemuxer
         shared_ptr<DataProvider> m_pDataProvider;
         AVFormatContext *m_fmtc = nullptr;
         AVIOContext *m_avioc = nullptr;
-        AVPacket *m_pkt = nullptr;         // 替换为指针类型
-        AVPacket *m_pktFiltered = nullptr; // 替换为指针类型
+        AVPacket *m_pkt = nullptr;
+        AVPacket *m_pktFiltered = nullptr;
         AVBSFContext *m_bsfc = nullptr;
 
         int m_fps = 0;
@@ -466,7 +492,8 @@ namespace FFHDDemuxer
         int m_nWidth = 0, m_nHeight = 0, m_nBitDepth = 0, m_nBPP = 0, m_nChromaHeight = 0;
         double m_timeBase = 0.0;
         int64_t m_userTimeScale = 0;
-        uint8_t *m_pDataWithHeader = nullptr;
+        // uint8_t *m_pDataWithHeader = nullptr;
+        std::vector<uint8_t> m_pDataWithHeader;
         unsigned int m_frameCount = 0;
 
         string uri_opened_;
@@ -491,4 +518,4 @@ namespace FFHDDemuxer
             instance.reset();
         return instance;
     }
-}; // namespace FFHDDemuxer
+};

@@ -32,7 +32,7 @@ bool CudaDecoder::open(const std::string &url)
             decoder_ = FFHDDecoder::create_cuvid_decoder(
                 true, // bUseDeviceFrame = true
                 FFHDDecoder::ffmpeg2NvCodecId(demuxer_->get_video_codec()),
-                4,       // max_cache
+                1,       // max_cache
                 gpu_id_, // gpu_id
                 nullptr,
                 nullptr,
@@ -99,6 +99,12 @@ bool CudaDecoder::grab()
     {
         if (!reconnect())
             return false;
+    }
+
+    // 如果内部还有未取完的帧，不要去拉取新包覆盖！
+    if (decoded_frames_available_ > 0)
+    {
+        return true;
     }
 
     uint8_t *packet_data = nullptr;
@@ -201,7 +207,7 @@ int CudaDecoder::getHeight() const
 void CudaDecoder::release()
 {
     is_opened_ = false;
-    
+
     // 🔧 关键修复：确保 decoder 和 demuxer 被彻底释放
     // shared_ptr::reset() 会调用引用计数，当计数为 0 时会自动调用析构函数
     if (decoder_)
@@ -214,7 +220,7 @@ void CudaDecoder::release()
         demuxer_.reset();
         demuxer_ = nullptr;
     }
-    
+
     decoded_frames_available_ = 0;
     last_gpu_frame_ptr_ = nullptr;
 }

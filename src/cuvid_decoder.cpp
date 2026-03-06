@@ -319,7 +319,7 @@ namespace FFHDDecoder
                 cuvidDestroyDecoder(m_hDecoder);
                 m_hDecoder = nullptr;
             }
-                
+
             checkCudaDriver(cuvidCreateDecoder(&m_hDecoder, &videoDecodeCreateInfo));
             return nDecodeSurface;
         }

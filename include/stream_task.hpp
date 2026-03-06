@@ -1,22 +1,25 @@
 #pragma once
 
 #include "interfaces.hpp" // 包含 IVideoDecoder, IImageEncoder
+#include "frame_memory_pool.hpp"
 #include <string>
 #include <memory>
 #include <atomic>
 #include <mutex>
 #include <vector>
 #include <chrono>
-#include <condition_variable> // 新增：用于条件变量休眠
+#include <condition_variable>
 
-enum class StreamStatus {
+enum class StreamStatus
+{
     CONNECTING,
     CONNECTED,
     DISCONNECTED
 };
 
 // 继承 enable_shared_from_this 至关重要，防止任务在线程池排队时对象被析构
-class StreamTask : public std::enable_shared_from_this<StreamTask> {
+class StreamTask : public std::enable_shared_from_this<StreamTask>
+{
 public:
     StreamTask(const std::string &url,
                int heartbeat_timeout_ms,
@@ -31,24 +34,27 @@ public:
 
     // 启动任务循环
     void start();
-    
+
     // 停止任务
     void stop();
 
-    // 获取最新编码好的帧（线程安全）
-    bool getLatestEncodedFrame(std::string &out_buffer);
+    // 获取最新编码好的帧（线程安全，零拷贝）
+    bool getLatestEncodedFrame(std::shared_ptr<std::string> &out_buffer);
 
     // Getters / Setters
     bool isConnected();
     bool isStopped() const { return stopped_; }
     StreamStatus getStatus() const { return status_; }
-    const std::string& getUrl() const { return url_; }
+    const std::string &getUrl() const { return url_; }
     int getDecoderType() const { return decoder_type_; }
     int getWidth() const { return decoder_ ? decoder_->getWidth() : 0; }
     int getHeight() const { return decoder_ ? decoder_->getHeight() : 0; }
     int getDecodeIntervalMs() const { return decode_interval_ms_; }
     bool shouldKeepOnFailure() const { return keep_on_failure_; }
-    bool waitForNextFrame(std::string &out_buffer, uint64_t &current_seq, int timeout_ms);
+
+    // 条件变量等待下一帧（零拷贝）
+    bool waitForNextFrame(std::shared_ptr<std::string> &out_buffer, uint64_t &current_seq, int timeout_ms);
+
     // 心跳保活
     void keepAlive();
     bool isTimeout();
@@ -57,16 +63,15 @@ private:
     void updateHeartbeat();
 
     // --- 异步调度逻辑 ---
-    
+
     // 调度下一步操作
-    // force_delay_ms: 如果 > 0，则启动一个等待线程/定时器，稍后再投递任务
-    void scheduleNext(int force_delay_ms = 0); 
-    
+    void scheduleNext(int force_delay_ms = 0);
+
     // 阶段1：IO操作 (Demux / Grab / Network Read) -> 运行在 IO线程池
-    void stepIO();      
-    
+    void stepIO();
+
     // 阶段2：计算操作 (Decode / Convert / Encode) -> 运行在 计算线程池
-    void stepCompute(); 
+    void stepCompute();
 
     // 返回 false 表示休眠被 stop() 中断；返回 true 表示休眠正常结束
     bool interruptibleSleep(int ms);
@@ -87,14 +92,17 @@ private:
     std::atomic<bool> stopped_{false}; // 显式停止标志
     std::atomic<StreamStatus> status_{StreamStatus::DISCONNECTED};
     std::atomic<bool> connected_{false};
-    
+
     // 保护 decoder_ 的互斥锁（防止多线程重入或与 stop 冲突）
     std::mutex decoder_mutex_;
 
     // 保护最新帧数据的互斥锁
     std::mutex frame_mutex_;
-    std::string latest_encoded_frame_;
-    
+    std::shared_ptr<std::string> latest_encoded_frame_;
+
+    // 帧内存池
+    std::shared_ptr<FrameMemoryPool> frame_pool_;
+
     // 心跳时间戳
     std::atomic<int64_t> last_access_time_;
 
@@ -110,7 +118,5 @@ private:
     uint64_t frame_seq_{0};
 
     // 用于 CPU 路径的图像缓存，避免反复分配 cv::Mat
-    cv::Mat reusable_frame_; 
-    // 用于接收编码后 JPEG 数据的缓存，保留 capacity 避免反复 new 内存
-    std::string reusable_encode_buffer_;
+    cv::Mat reusable_frame_;
 };

@@ -19,8 +19,8 @@ import os
 # default address can still be overridden via environment var
 SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50052")
 RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1001"
-RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
-RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501"
+# RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
+# RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501"
 
 
 def example_list_streams():

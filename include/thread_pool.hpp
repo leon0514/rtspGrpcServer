@@ -13,7 +13,8 @@ public:
     {
         for (int i = 0; i < num; i++)
         {
-            threads_.emplace_back([this](){
+            threads_.emplace_back([this]()
+                                  {
                 while (true)
                 {
                     std::function<void()> task;
@@ -33,8 +34,7 @@ public:
                     // 这样通过 std::bind 创建的 task 对象实际上是一个可调用对象。
                     // 当你调用 task() 时，它会使用绑定的 f 和 args... 来执行原始的函数或 Lambda 表达式。
                     task();
-                }
-            });
+                } });
         }
     }
 
@@ -47,9 +47,10 @@ public:
         // 将running_ 设置为std::atomic<bool>，可以不用手动加锁了
         running_ = false;
         cv_.notify_all();
-        for(auto& thread : threads_)
+        for (auto &thread : threads_)
         {
-            if (thread.joinable()) thread.join();
+            if (thread.joinable())
+                thread.join();
         }
     }
 
@@ -58,15 +59,15 @@ public:
     // 2. 使用std::forward 完美转发保证参数的左值右值状态, 避免无意间的拷贝或移动，从而提高了效率。
     // 3. 通知线程有数据到队列中了
     // F&& f, Args&&... args 这个是万能引用
-    template<typename Func, typename ...Args>
-    void enqueue(Func&& func, Args&& ... args)
+    template <typename Func, typename... Args>
+    void enqueue(Func &&func, Args &&...args)
     {
         // std::function<void()> 是一个通用的可调用对象包装器
         // 它可以存储任何符合 void() 签名的可调用对象
         // 这里是将 task 定义为一个没有返回值（void）且无参数的函数。
         // std::bind 是一个用于创建“绑定”函数对象的标准库功能
         // 它能够将一个函数（或者可调用对象）与固定的参数绑定，返回一个新的可调用对象。
-        std::function<void()> task = 
+        std::function<void()> task =
             std::bind(std::forward<Func>(func), std::forward<Args>(args)...);
         {
             std::unique_lock<std::mutex> lock(mtx_);

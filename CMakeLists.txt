@@ -29,6 +29,8 @@ find_package(Protobuf REQUIRED)
 # 查找 PkgConfig 工具
 find_package(PkgConfig REQUIRED)
 
+pkg_check_modules(JEMALLOC REQUIRED jemalloc)
+
 # 查找 gRPC
 pkg_check_modules(GRPC REQUIRED grpc++ grpc)
 
@@ -141,4 +143,5 @@ target_link_libraries(rtsp_server
     CUDA::nvjpeg              # NVJPEG GPU 编码库
     protobuf::libprotobuf 
     grpc++_reflection
+    ${JEMALLOC_LIBRARIES}
 )

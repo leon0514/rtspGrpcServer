@@ -8,17 +8,11 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/ostr.h>
 
-// =============================================================
-// 构造函数：启动清理线程
-// =============================================================
 RTSPServiceImpl::RTSPServiceImpl() : manager_running_(true)
 {
     cleanup_thread_ = std::thread(&RTSPServiceImpl::cleanupLoop, this);
 }
 
-// =============================================================
-// 析构函数：停止清理线程和所有流
-// =============================================================
 RTSPServiceImpl::~RTSPServiceImpl()
 {
     manager_running_ = false;
@@ -38,9 +32,6 @@ RTSPServiceImpl::~RTSPServiceImpl()
     }
 }
 
-// =============================================================
-// StartStream：开启拉流
-// =============================================================
 grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const streamingservice::StartRequest *request, streamingservice::StartResponse *response)
 {
     std::string req_url = request->rtsp_url();
@@ -84,7 +75,6 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     }
     else
     {
-        // 降低 CPU JPEG 质量到 75，防止 CPU 飙升
         encoder = std::make_shared<OpencvEncoder>(75);
         spdlog::info("Using OpenCV CPU encoder");
     }
@@ -126,9 +116,6 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     return grpc::Status::OK;
 }
 
-// =============================================================
-// StopStream：停止拉流
-// =============================================================
 grpc::Status RTSPServiceImpl::StopStream(grpc::ServerContext *context, const streamingservice::StopRequest *request, streamingservice::StopResponse *response)
 {
     std::string stream_id = request->stream_id();
@@ -159,9 +146,6 @@ grpc::Status RTSPServiceImpl::StopStream(grpc::ServerContext *context, const str
     return grpc::Status::OK;
 }
 
-// =============================================================
-// GetLatestFrame：单次获取最新帧
-// =============================================================
 grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const streamingservice::FrameRequest *request, streamingservice::FrameResponse *response)
 {
     std::string stream_id = request->stream_id();
@@ -183,11 +167,11 @@ grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const
         return grpc::Status::OK;
     }
 
-    std::string buffer;
-    if (task->getLatestEncodedFrame(buffer))
+    std::shared_ptr<std::string> frame_ptr;
+    if (task->getLatestEncodedFrame(frame_ptr))
     {
         response->set_success(true);
-        response->set_image_data(buffer);
+        response->set_image_data(*frame_ptr);
         response->set_message("OK");
     }
     else
@@ -198,9 +182,6 @@ grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const
     return grpc::Status::OK;
 }
 
-// =============================================================
-// StreamFrames：【深度优化】条件变量流式传输视频帧
-// =============================================================
 grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
                                            const streamingservice::StreamRequest *request,
                                            grpc::ServerWriter<streamingservice::FrameResponse> *writer)
@@ -233,61 +214,50 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
         frame_interval_us = 1000000LL / max_fps;
     }
 
-    // 客户端当前处理到的帧序号
     uint64_t client_seq = 0;
-    // 减去 1 小时保证第一帧能够立刻发送，不受 FPS 限制影响
     auto last_send_time = std::chrono::steady_clock::now() - std::chrono::hours(1);
 
     spdlog::info("[STREAM] Client connected to stream: {}, max_fps: {}", stream_id, max_fps);
 
-    std::string encoded_frame;
-    encoded_frame.reserve(1024 * 1024); // 预留 1MB 容量
+    std::shared_ptr<std::string> encoded_frame;
     streamingservice::FrameResponse response;
+
     while (!context->IsCancelled())
     {
         if (task->isStopped())
         {
-            streamingservice::FrameResponse response;
-            response.set_success(false);
-            response.set_message("Stream has been stopped");
-            writer->Write(response);
+            streamingservice::FrameResponse resp;
+            resp.set_success(false);
+            resp.set_message("Stream has been stopped");
+            writer->Write(resp);
             break;
         }
 
-        // std::string encoded_frame;
-        // 【核心优化】阻塞等待新帧最多 500ms。如果有新帧立马唤醒，毫无延迟和 CPU 空转。
-        // timeout 是为了定期循环判断 context->IsCancelled() 以便安全退出
         bool has_new_frame = task->waitForNextFrame(encoded_frame, client_seq, 500);
 
         if (!has_new_frame)
         {
-            continue; // 超时或未获取到，继续循环
+            continue;
         }
 
-        // FPS 控制策略：不是 sleep，而是直接抛弃超出的帧 (Drop frame to keep real-time)
         if (frame_interval_us > 0)
         {
             auto now = std::chrono::steady_clock::now();
             auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(now - last_send_time).count();
             if (elapsed_us < frame_interval_us)
             {
-                // 发送速度太快超过了 max_fps，直接忽略本帧。
-                // 因为 client_seq 已经更新，下一轮 while 会自动等待更新的下一帧
                 continue;
             }
             last_send_time = now;
         }
 
-        // 组装并发送数据包
-
         response.set_success(true);
-        // response.set_image_data(std::move(encoded_frame)); // 优化：使用 move 避免额外拷贝
-        response.set_image_data(encoded_frame);
+        response.set_image_data(*encoded_frame);
         response.set_message("OK");
 
         if (!writer->Write(response))
         {
-            break; // 客户端网络断开
+            break;
         }
 
         task->keepAlive();
@@ -297,9 +267,6 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
     return grpc::Status::OK;
 }
 
-// =============================================================
-// CheckStream & ListStreams & cleanupLoop (保持原样)
-// =============================================================
 grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const streamingservice::CheckRequest *request, streamingservice::CheckResponse *response)
 {
     std::string stream_id = request->stream_id();
