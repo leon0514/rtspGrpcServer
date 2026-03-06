@@ -19,10 +19,11 @@ bool CudaDecoder::open(const std::string &url)
         release();
 
         // 1. 创建解封装器
-        demuxer_ = FFHDDemuxer::create_ffmpeg_demuxer(url, true);
+        demuxer_ = FFHDDemuxer::create_ffmpeg_demuxer(url, false);
         if (!demuxer_)
         {
             std::cerr << "[WARN] Attempt " << attempt << ": Failed to create demuxer for " << url << std::endl;
+            continue;
         }
         else
         {
@@ -32,7 +33,7 @@ bool CudaDecoder::open(const std::string &url)
             decoder_ = FFHDDecoder::create_cuvid_decoder(
                 true, // bUseDeviceFrame = true
                 FFHDDecoder::ffmpeg2NvCodecId(demuxer_->get_video_codec()),
-                1,       // max_cache
+                5,       // max_cache
                 gpu_id_, // gpu_id
                 nullptr,
                 nullptr,
@@ -63,6 +64,7 @@ bool CudaDecoder::open(const std::string &url)
         // 如果未成功，且还没到最后一次尝试，则等待后再试
         if (attempt < MAX_ATTEMPTS)
         {
+            spdlog::info("[INFO] Retrying to open stream (attempt {}/{})...", attempt + 1, MAX_ATTEMPTS);
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     }
@@ -76,15 +78,12 @@ bool CudaDecoder::reconnect()
     spdlog::info("[WARN] Stream disconnected, attempting to reconnect to: {}", last_url_);
     release();
     // 简单的重连逻辑：尝试重新 open
-    for (int i = 0; i < 3; ++i)
+    if (open(last_url_))
     {
-        if (open(last_url_))
-        {
-            spdlog::info("[INFO] Reconnection successful.");
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        spdlog::info("[INFO] Reconnection successful.");
+        return true;
     }
+    std::this_thread::sleep_for(std::chrono::seconds(2));
     return false;
 }
 
@@ -212,6 +211,7 @@ void CudaDecoder::release()
     // shared_ptr::reset() 会调用引用计数，当计数为 0 时会自动调用析构函数
     if (decoder_)
     {
+        decoder_->decode(nullptr, 0);
         decoder_.reset();
         decoder_ = nullptr;
     }

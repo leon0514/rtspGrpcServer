@@ -7,9 +7,9 @@
 
 bool CpuDecoder::open(const std::string &url)
 {
-    last_url_ = url;      
+    last_url_ = url;
     // CPU 解码通常不需要像 GPU 那样预热太多帧，跳过前几帧避免花屏即可
-    frames_to_skip_ = 5; 
+    frames_to_skip_ = 5;
 
     const int MAX_ATTEMPTS = 3;
 
@@ -33,10 +33,9 @@ bool CpuDecoder::open(const std::string &url)
 
             // 2. 创建软解码器
             decoder_ = FFHDDecoder::create_ffmpeg_decoder(
-                static_cast<AVCodecID>(demuxer_->get_video_codec()), 
-                extra_data, 
-                extra_size
-            );
+                static_cast<AVCodecID>(demuxer_->get_video_codec()),
+                extra_data,
+                extra_size);
 
             if (!decoder_)
             {
@@ -68,7 +67,7 @@ bool CpuDecoder::reconnect()
     release();
     // 简单的重连逻辑：尝试重新 open
     for (int i = 0; i < 3; ++i)
-    { 
+    {
         if (open(last_url_))
         {
             spdlog::info("[INFO] Reconnection successful (CPU).");
@@ -111,7 +110,7 @@ bool CpuDecoder::grab()
             // 如果 demux 失败，触发重连逻辑
             if (reconnect())
                 continue;
-                
+
             return false; // 重连失败或流彻底结束
         }
 
@@ -119,7 +118,7 @@ bool CpuDecoder::grab()
         // 送入后进入下一轮循环，再次触发 receive_frame
         decoder_->send_packet(packet_data, packet_size, last_pts_);
     }
-    
+
     return true;
 }
 
@@ -180,6 +179,14 @@ void CpuDecoder::release()
     is_opened_ = false;
     frame_ready_ = false;
     current_frame_ = nullptr;
-    decoder_.reset();
-    demuxer_.reset();
+    if (decoder_)
+    {
+        decoder_->send_packet(nullptr, 0);
+        decoder_.reset();
+    }
+
+    if (demuxer_)
+    {
+        demuxer_.reset();
+    }
 }

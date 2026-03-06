@@ -47,7 +47,7 @@ namespace FFHDDemuxer
     public:
         FFmpegDemuxerImpl()
         {
-            avformat_network_init();
+            // avformat_network_init();
             m_pkt = av_packet_alloc();
             m_pktFiltered = av_packet_alloc();
         }
@@ -59,7 +59,7 @@ namespace FFHDDemuxer
                 av_packet_free(&m_pkt);
             if (m_pktFiltered)
                 av_packet_free(&m_pktFiltered);
-            avformat_network_deinit();
+            // avformat_network_deinit();
         }
 
         bool open(const string &uri, bool auto_reboot = true, int64_t timescale = 1000)
@@ -172,14 +172,38 @@ namespace FFHDDemuxer
 
             while (true)
             {
-                av_packet_unref(m_pkt);
+                // 1. [修复核心] 首先检查并排空 BSF (位流过滤器) 内部遗留的包
+                if (m_bMp4H264 || m_bMp4HEVC)
+                {
+                    int recv_ret = av_bsf_receive_packet(m_bsfc, m_pktFiltered);
+                    if (recv_ret == 0) // 成功从过滤器拿到一个包
+                    {
+                        *ppVideo = m_pktFiltered->data;
+                        *pnVideoBytes = m_pktFiltered->size;
+                        local_pts = (int64_t)(m_pktFiltered->pts * m_userTimeScale * m_timeBase);
+                        if (pts)
+                            *pts = local_pts;
+                        if (iskey_frame)
+                            *iskey_frame = m_pktFiltered->flags & AV_PKT_FLAG_KEY;
+                        m_frameCount++;
+                        return true; // 拿到包后立即返回，下次进入依然会先尝试 Receive
+                    }
+                    else if (recv_ret != AVERROR(EAGAIN) && recv_ret != AVERROR_EOF)
+                    {
+                        INFOE("Error during bitstream filtering receive");
+                        return false;
+                    }
+                    // 如果返回 EAGAIN，说明 BSF 缓存空了，需要走下方逻辑读取新包送进去
+                }
 
+                // 2. 只有当 BSF 没有缓存时，才从 Demuxer 读取新包
+                av_packet_unref(m_pkt);
                 int e = av_read_frame(m_fmtc, m_pkt);
                 if (e >= 0)
                 {
                     if (m_pkt->stream_index != m_iVideoStream)
                     {
-                        continue;
+                        continue; // 丢弃音频等非视频包
                     }
                 }
                 else
@@ -189,89 +213,38 @@ namespace FFHDDemuxer
                     {
                         INFOE("Read frame failed. Attempting to reopen...");
                         if (!this->reopen())
-                        {
-                            INFOE("Reopen failed.");
                             return false;
-                        }
                         is_reboot_ = true;
                         retries++;
                         continue;
                     }
-                    return false;
+                    return false; // EOF 或读取失败
                 }
 
-                if (iskey_frame)
-                {
-                    *iskey_frame = m_pkt->flags & AV_PKT_FLAG_KEY;
-                }
-
+                // 3. 将新读取的包送入 BSF
                 if (m_bMp4H264 || m_bMp4HEVC)
                 {
-                    av_packet_unref(m_pktFiltered);
-
                     int send_ret = av_bsf_send_packet(m_bsfc, m_pkt);
                     if (send_ret < 0)
                     {
-                        av_packet_unref(m_pkt);
-                        continue;
+                        continue; // 忽略错误包，继续读下一个
                     }
-
-                    int recv_ret = av_bsf_receive_packet(m_bsfc, m_pktFiltered);
-                    if (recv_ret == 0)
-                    {
-                        *ppVideo = m_pktFiltered->data;
-                        *pnVideoBytes = m_pktFiltered->size;
-                        local_pts = (int64_t)(m_pktFiltered->pts * m_userTimeScale * m_timeBase);
-                        break;
-                    }
-                    else if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF)
-                    {
-                        continue;
-                    }
-                    else
-                    {
-                        INFOE("Error during bitstream filtering");
-                        av_packet_unref(m_pkt);
-                        av_packet_unref(m_pktFiltered);
-                        return false;
-                    }
+                    // 送入成功后，continue 回到循环顶部去 Receive 这个包
+                    continue;
                 }
                 else
                 {
+                    // MPEG4 等不需要 BSF 处理的分支保持原逻辑
                     if (m_bMp4MPEG4 && (m_frameCount == 0))
                     {
                         int extraDataSize = m_fmtc->streams[m_iVideoStream]->codecpar->extradata_size;
                         if (extraDataSize > 0)
                         {
-                            // if (m_pDataWithHeader)
-                            // {
-                            //     av_free(m_pDataWithHeader);
-                            //     m_pDataWithHeader = nullptr;
-                            // }
-                            // m_pDataWithHeader = (uint8_t *)av_malloc(extraDataSize + m_pkt->size - 3 * sizeof(uint8_t));
-                            // if (!m_pDataWithHeader)
-                            // {
-                            //     INFOE("FFmpeg error, m_pDataWithHeader alloc failed");
-                            //     return false;
-                            // }
-                            // memcpy(m_pDataWithHeader, m_fmtc->streams[m_iVideoStream]->codecpar->extradata, extraDataSize);
-                            // memcpy(m_pDataWithHeader + extraDataSize, m_pkt->data + 3, m_pkt->size - 3 * sizeof(uint8_t));
-
-                            // *ppVideo = m_pDataWithHeader;
-                            // *pnVideoBytes = extraDataSize + m_pkt->size - 3 * sizeof(uint8_t);
-
                             int total_size = extraDataSize + m_pkt->size - 3 * sizeof(uint8_t);
-
-                            // 自动分配内存，无需手动 free
                             m_pDataWithHeader.resize(total_size);
 
-                            memcpy(m_pDataWithHeader.data(),
-                                   m_fmtc->streams[m_iVideoStream]->codecpar->extradata,
-                                   extraDataSize);
-
-                            memcpy(m_pDataWithHeader.data() + extraDataSize,
-                                   m_pkt->data + 3,
-                                   m_pkt->size - 3 * sizeof(uint8_t));
+                            memcpy(m_pDataWithHeader.data(), m_fmtc->streams[m_iVideoStream]->codecpar->extradata, extraDataSize);
+                            memcpy(m_pDataWithHeader.data() + extraDataSize, m_pkt->data + 3, m_pkt->size - 3 * sizeof(uint8_t));
 
                             *ppVideo = m_pDataWithHeader.data();
                             *pnVideoBytes = total_size;
@@ -283,14 +256,14 @@ namespace FFHDDemuxer
                         *pnVideoBytes = m_pkt->size;
                     }
                     local_pts = (int64_t)(m_pkt->pts * m_userTimeScale * m_timeBase);
-                    break;
+                    if (pts)
+                        *pts = local_pts;
+                    if (iskey_frame)
+                        *iskey_frame = m_pkt->flags & AV_PKT_FLAG_KEY;
+                    m_frameCount++;
+                    return true;
                 }
             }
-
-            if (pts)
-                *pts = local_pts;
-            m_frameCount++;
-            return true;
         }
 
         virtual bool isreboot() override { return is_reboot_; }
@@ -456,7 +429,10 @@ namespace FFHDDemuxer
                 av_dict_set(&options, "rtsp_transport", "tcp", 0);
                 av_dict_set(&options, "buffer_size", "1024000", 0);
                 av_dict_set(&options, "stimeout", "2000000", 0);
-                av_dict_set(&options, "max_delay", "1000000", 0);
+                // 大幅降低 FFmpeg 探测流时的最大缓存包大小和时间
+                // 这不仅能让开流速度从几秒变到毫秒级，还能避免在流断开时残留巨大的 Probe Buffer
+                av_dict_set(&options, "probesize", "500000", 0);        // 限制最大探测数据为 500KB
+                av_dict_set(&options, "analyzeduration", "1000000", 0); // 限制探测时间为 1秒
             }
 
             AVFormatContext *ctx = nullptr;
@@ -470,6 +446,11 @@ namespace FFHDDemuxer
             if (ret < 0)
             {
                 INFOE("FFmpeg avformat_open_input failed");
+                if (ctx)
+                {
+                    avformat_free_context(ctx);
+                    ctx = nullptr;
+                }
                 return nullptr;
             }
             return ctx;

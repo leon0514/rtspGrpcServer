@@ -101,6 +101,11 @@ void StreamTask::stop()
             latest_encoded_frame_.reset();
         }
 
+        if (frame_pool_)
+        {
+            frame_pool_.reset();
+        }
+
         status_ = StreamStatus::DISCONNECTED;
         connected_ = false;
     }

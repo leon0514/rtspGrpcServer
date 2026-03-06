@@ -57,7 +57,7 @@ private:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         // 限制池的最大缓存数量，防止异常情况下内存无限膨胀
-        if (pool_.size() < 30)
+        if (pool_.size() < 3)
         {
             pool_.push_back(std::move(str));
         }

@@ -4,7 +4,7 @@
 #include "nvjpeg_encoder.hpp"
 #include "utils.hpp"
 #include "task_scheduler.hpp"
-
+#include <malloc.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/ostr.h>
 
@@ -75,7 +75,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     }
     else
     {
-        encoder = std::make_shared<OpencvEncoder>(75);
+        encoder = std::make_shared<OpencvEncoder>(85);
         spdlog::info("Using OpenCV CPU encoder");
     }
 
@@ -373,5 +373,10 @@ void RTSPServiceImpl::cleanupLoop()
         {
             task->stop();
         }
+        // 🔧 修复：强制通知 Glibc 将多线程产生的缓存碎片内存交还给操作系统
+        // 这对于流媒体这种高频大内存申请/释放的 C++ 服务至关重要
+#ifdef __linux__
+        malloc_trim(0);
+#endif
     }
 }

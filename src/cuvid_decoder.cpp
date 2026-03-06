@@ -320,6 +320,29 @@ namespace FFHDDecoder
                 m_hDecoder = nullptr;
             }
 
+            for (uint8_t *pFrame : m_vpFrame)
+            {
+                if (m_bUseDeviceFrame)
+                    cudaFree(pFrame);
+                else
+                    cudaFreeHost(pFrame);
+            }
+            m_vpFrame.clear();
+            m_vTimestamp.clear();
+            m_nDecodedFrame = 0;
+            m_nDecodedFrameReturned = 0;
+
+            if (m_pYUVFrame)
+            {
+                cuMemFree(m_pYUVFrame);
+                m_pYUVFrame = 0;
+            }
+            if (m_pBGRFrame)
+            {
+                cuMemFree(m_pBGRFrame);
+                m_pBGRFrame = 0;
+            }
+
             checkCudaDriver(cuvidCreateDecoder(&m_hDecoder, &videoDecodeCreateInfo));
             return nDecodeSurface;
         }
@@ -523,7 +546,11 @@ namespace FFHDDecoder
 
         virtual ~CUVIDDecoderImpl()
         {
-
+            CUDATools::AutoDevice auto_device_exchange(m_gpuID);
+            if (m_cuvidStream)
+            {
+                checkCudaDriver(cuStreamSynchronize(m_cuvidStream));
+            }
             if (m_hParser)
                 cuvidDestroyVideoParser(m_hParser);
 

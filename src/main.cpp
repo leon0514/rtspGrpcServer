@@ -16,6 +16,11 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
+extern "C"
+{
+#include <libavformat/avformat.h>
+}
+
 void display_banner()
 {
     // ANSI color codes for bright cyan and reset
@@ -109,6 +114,8 @@ int main(int argc, char **argv)
     // 1. 先初始化日志，确保后续步骤可以打印日志
     setupLogging();
     display_banner();
+
+    avformat_network_init();
 
     // 2. 解析参数
     std::string server_address("0.0.0.0:50051");
