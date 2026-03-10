@@ -62,7 +62,7 @@ def example_poll_frame():
             status = client.get_stream_status(stream_id)
             if status != STATUS_CONNECTING:
                 break
-            print(f"等待连接... ({i+1}/10)")
+            print(f"等待连接...")
             time.sleep(1)
         
         if status != STATUS_CONNECTED:
@@ -103,7 +103,7 @@ def example_stream_frames():
             status = client.get_stream_status(stream_id)
             if status != STATUS_CONNECTING:
                 break
-            print(f"等待连接... ({i+1}/10)")
+            print(f"等待连接...")
             time.sleep(1)
         
         if status != STATUS_CONNECTED:
@@ -137,6 +137,6 @@ def example_stream_frames():
 if __name__ == "__main__":
     # 运行示例 (取消注释需要运行的示例)
     
-    example_list_streams()
+    # example_list_streams()
     # example_poll_frame()
-    # example_stream_frames()
+    example_stream_frames()
