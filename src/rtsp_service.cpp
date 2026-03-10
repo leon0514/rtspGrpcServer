@@ -38,21 +38,29 @@ RTSPServiceImpl::~RTSPServiceImpl()
 
 grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const streamingservice::StartRequest *request, streamingservice::StartResponse *response)
 {
-    std::string req_url = request->rtsp_url();
+    const std::string &req_url = request->rtsp_url();
 
+    // 使用 url_to_id_ 实现 O(1) 的快速查找，替代原来的 O(N) 遍历
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        for (auto &pair : streams_)
+        auto it = url_to_id_.find(req_url);
+        if (it != url_to_id_.end())
         {
-            if (pair.second->getUrl() == req_url)
+            std::string existing_id = it->second;
+            auto stream_it = streams_.find(existing_id);
+            if (stream_it != streams_.end())
             {
-                std::string existing_id = pair.first;
-                pair.second->keepAlive();
+                stream_it->second->keepAlive();
                 spdlog::info("[REUSE] URL already exists. Returning ID: {}", existing_id);
                 response->set_success(true);
                 response->set_stream_id(existing_id);
                 response->set_message("Stream already exists, reusing existing task.");
                 return grpc::Status::OK;
+            }
+            else
+            {
+                // 防御性编程：如果 streams_ 中没有，但 url_to_id_ 中有，说明状态不一致，清理掉脏数据
+                url_to_id_.erase(it);
             }
         }
     }
@@ -60,9 +68,10 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     auto decoder_type = request->decoder_type();
     int gpu_id = request->gpu_id();
     std::string decode_type_str = (decoder_type == streamingservice::DECODER_CPU_FFMPEG) ? "FFmpeg" : (decoder_type == streamingservice::DECODER_GPU_NVCUVID) ? "GPU"
-                                                                                                                                                              : "UNKONW";
+                                                                                                                                                              : "UNKNOWN";
     spdlog::info("Decoder type: {}, GPU ID: {}", decode_type_str, gpu_id);
 
+    // 耗时操作：在无锁状态下创建解码器和编码器
     auto decoder = DecoderFactory::create(decoder_type, gpu_id);
     if (!decoder)
     {
@@ -72,14 +81,15 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     }
 
     std::shared_ptr<IImageEncoder> encoder;
+    const int jpeg_quality = 85;
     if (decoder_type == streamingservice::DECODER_GPU_NVCUVID)
     {
-        encoder = std::make_shared<NvjpegEncoder>(85, gpu_id);
+        encoder = std::make_shared<NvjpegEncoder>(jpeg_quality, gpu_id);
         spdlog::info("Using NVJPEG GPU encoder");
     }
     else
     {
-        encoder = std::make_shared<OpencvEncoder>(85);
+        encoder = std::make_shared<OpencvEncoder>(jpeg_quality);
         spdlog::info("Using OpenCV CPU encoder");
     }
 
@@ -95,20 +105,23 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
 
     std::string stream_id = generate_uuid();
 
+    // 双重检查锁定（Double-Checked Locking）
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        for (auto &pair : streams_)
+        // 使用 url_to_id_ 进行 O(1) 的并发冲突检查
+        auto it = url_to_id_.find(req_url);
+        if (it != url_to_id_.end())
         {
-            if (pair.second->getUrl() == req_url)
-            {
-                task->stop();
-                response->set_success(true);
-                response->set_stream_id(pair.first);
-                response->set_message("Stream created by another request concurrently.");
-                return grpc::Status::OK;
-            }
+            task->stop(); // 释放掉当前线程白建的资源
+            response->set_success(true);
+            response->set_stream_id(it->second);
+            response->set_message("Stream created by another request concurrently.");
+            return grpc::Status::OK;
         }
+
+        // 必须同时更新两个 Map
         streams_[stream_id] = task;
+        url_to_id_[req_url] = stream_id;
     }
 
     task->start();
@@ -345,7 +358,7 @@ void RTSPServiceImpl::cleanupLoop()
 
         {
             std::lock_guard<std::mutex> lock(map_mutex_);
-            spdlog::info("Current active streams: {}", streams_.size());
+            // spdlog::info("Current active streams: {}", streams_.size());
             for (auto it = streams_.begin(); it != streams_.end();)
             {
                 bool should_remove = false;

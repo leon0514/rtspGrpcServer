@@ -80,16 +80,17 @@ void StreamTask::stop()
         spdlog::info("StreamTask stopping: {}", url_);
         stopped_ = true;
 
+        // 唤醒所有等待的条件变量
         {
             std::lock_guard<std::mutex> sleep_lock(sleep_mutex_);
             sleep_cv_.notify_all();
         }
-
         {
             std::lock_guard<std::mutex> frame_lock(frame_mutex_);
             frame_cv_.notify_all();
         }
 
+        // 注意：这里可能会短暂阻塞，等待 stepIO/stepCompute 释放锁
         std::lock_guard<std::mutex> lock(decoder_mutex_);
         if (decoder_)
         {
@@ -151,6 +152,7 @@ void StreamTask::stepIO()
     if (!decoder_)
         return;
 
+    // 1. 处理连接断开重连逻辑
     if (!decoder_->isOpened())
     {
         const int max_reconnect_attempts = 5;
@@ -159,11 +161,11 @@ void StreamTask::stepIO()
             if (!keep_on_failure_)
             {
                 spdlog::error("Max reconnect attempts reached. Stopping task: {}", url_);
-                lock.unlock();
+                lock.unlock(); // 尽早释放锁
                 stop();
                 return;
             }
-            reconnect_attempts_ = 0;
+            reconnect_attempts_ = 0; // 重置计数，准备下一轮无尽重连
         }
 
         reconnect_attempts_++;
@@ -177,33 +179,35 @@ void StreamTask::stepIO()
             spdlog::info("Connected successfully: {}", url_);
             status_ = StreamStatus::CONNECTED;
             reconnect_attempts_ = 0;
-            last_encode_time_ = std::chrono::steady_clock::now();
+            // 连接成功后，重置编码时间，准备立即出第一帧
+            last_encode_time_ = std::chrono::steady_clock::now() - std::chrono::hours(1);
         }
         else
         {
             lock.unlock();
+            // 连接失败，使用定时器延迟 1000ms 后再次触发，不阻塞线程池！
             scheduleNext(1000);
             return;
         }
     }
 
+    // 2. 抓取网络包 (grab 本身是阻塞的，由摄像头帧率控制节奏)
     if (!decoder_->grab())
     {
         spdlog::warn("Frame grab failed: {}", url_);
         connected_ = false;
         decoder_->release();
-
         lock.unlock();
-        if (interruptibleSleep(50))
-        {
-            scheduleNext(0);
-        }
+
+        // 抓取失败，退避 50ms 后重试
+        scheduleNext(50);
         return;
     }
 
     connected_ = true;
     reconnect_attempts_ = 0;
 
+    // 3. 抽帧逻辑判断 (Frame dropping)
     bool should_process = true;
     int64_t decode_interval_us = decode_interval_ms_ * 1000LL;
 
@@ -219,48 +223,27 @@ void StreamTask::stepIO()
 
     if (should_process)
     {
+        // 需要解码：释放锁，将任务派发给计算线程池
         lock.unlock();
         std::weak_ptr<StreamTask> weak_self = shared_from_this();
         TaskScheduler::instance().getComputePool(gpu_id_).enqueue(
             [weak_self]()
-            {  if (auto self = weak_self.lock()) {
-                self->stepCompute();
-            } });
+            {
+                if (auto self = weak_self.lock())
+                {
+                    self->stepCompute();
+                }
+            });
     }
     else
     {
-        int drop_count = 0;
-        while (!should_process && drop_count < 5 && running_)
-        {
-            cv::Mat dummy;
-            decoder_->retrieve(dummy, false);
-            dummy.release();
+        // 不需要解码（抽帧丢弃）：仅仅把刚才 grab 的数据从内部缓冲区清空
+        cv::Mat dummy;
+        decoder_->retrieve(dummy, false); // false 可能代表 fast/dummy retrieve
 
-            if (!interruptibleSleep(2))
-            {
-                return;
-            }
-
-            if (!decoder_->grab())
-            {
-                spdlog::warn("Frame grab failed during drop: {}", url_);
-                connected_ = false;
-                decoder_->release();
-                lock.unlock();
-                if (interruptibleSleep(50))
-                    scheduleNext(0);
-                return;
-            }
-            drop_count++;
-
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(now - last_encode_time_).count();
-            if (elapsed_us >= decode_interval_us)
-            {
-                should_process = true;
-            }
-        }
         lock.unlock();
+        // 丢弃完毕，立即准备抓取下一帧。
+        // 因为 grab() 是网络阻塞的，所以传 0 也不会导致 CPU 100% 空转。
         scheduleNext(0);
     }
 }
@@ -287,6 +270,7 @@ void StreamTask::stepCompute()
     auto encode_buffer = frame_pool_->acquire();
     bool encode_ok = false;
 
+    // 真正的解码 (retrieve) 和 编码 (encode)
     if (decoder_->isGpuFrame() && encoder_->supportsGpuEncode())
     {
         if (decoder_->retrieve(reusable_frame_, true))
@@ -295,10 +279,7 @@ void StreamTask::stepCompute()
             if (gpu_ptr)
             {
                 encode_ok = encoder_->encodeGpu(
-                    gpu_ptr,
-                    decoder_->getWidth(),
-                    decoder_->getHeight(),
-                    *encode_buffer);
+                    gpu_ptr, decoder_->getWidth(), decoder_->getHeight(), *encode_buffer);
             }
         }
     }
@@ -310,8 +291,10 @@ void StreamTask::stepCompute()
         }
     }
 
+    // 计算完成，立即释放互斥锁
     lock.unlock();
 
+    // 通知订阅者
     if (encode_ok)
     {
         {
@@ -323,10 +306,9 @@ void StreamTask::stepCompute()
         frame_cv_.notify_all();
     }
 
-    if (interruptibleSleep(1))
-    {
-        scheduleNext(0);
-    }
+    // 移除硬编码的 interruptibleSleep(1)！
+    // 计算完成后，立即通知 IO 线程池去准备抓下一帧
+    scheduleNext(0);
 }
 
 void StreamTask::updateHeartbeat()
