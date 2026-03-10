@@ -17,7 +17,7 @@ from remote_capture import (
 import os
 
 # default address can still be overridden via environment var
-SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50055")
+SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50051")
 RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1001"
 # RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
 # RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501"
@@ -57,16 +57,19 @@ def example_poll_frame():
         print(f"流已启动: {stream_id[:8]}...")
         
         # 等待连接成功
-        for i in range(10):
-            if client.get_stream_status(stream_id) == STATUS_CONNECTED:
-                print("连接成功")
+        status = STATUS_CONNECTING
+        while status == STATUS_CONNECTING:
+            status = client.get_stream_status(stream_id)
+            if status != STATUS_CONNECTING:
                 break
             print(f"等待连接... ({i+1}/10)")
             time.sleep(1)
         
-        if client.get_stream_status(stream_id) != STATUS_CONNECTED:
+        if status != STATUS_CONNECTED:
             print("连接失败")
             return
+        else:
+            print("连接成功")
 
         while True:
             ret, frame = client.read(stream_id)
@@ -95,13 +98,20 @@ def example_stream_frames():
         if not stream_id:
             return
         
-        for i in range(10):
-            if client.get_stream_status(stream_id) == STATUS_CONNECTED:
-                print("连接成功")
+        status = STATUS_CONNECTING
+        while status == STATUS_CONNECTING:
+            status = client.get_stream_status(stream_id)
+            if status != STATUS_CONNECTING:
                 break
             print(f"等待连接... ({i+1}/10)")
             time.sleep(1)
         
+        if status != STATUS_CONNECTED:
+            print("连接失败")
+            return
+        else:
+            print("连接成功")
+
         frame_count = 0
         start = time.time()
         
@@ -127,6 +137,6 @@ def example_stream_frames():
 if __name__ == "__main__":
     # 运行示例 (取消注释需要运行的示例)
     
-    # example_list_streams()
+    example_list_streams()
     # example_poll_frame()
-    example_stream_frames()
+    # example_stream_frames()
