@@ -379,6 +379,8 @@ void RTSPServiceImpl::cleanupLoop()
                 {
                     spdlog::info("[{}] Auto-cleaning stream ID: {}", reason, it->first);
                     tasks_to_stop.push_back(it->second);
+                    std::string url = it->second->getUrl();
+                    url_to_id_.erase(url);
                     it = streams_.erase(it);
                 }
                 else
