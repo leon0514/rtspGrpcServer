@@ -93,17 +93,19 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         spdlog::info("Using OpenCV CPU encoder");
     }
 
+    std::string stream_id = generate_uuid();
+    spdlog::info("Using Shared Memory: {}", request->use_shared_mem() ? "Enabled" : "Disabled");
     auto task = std::make_shared<StreamTask>(
         req_url,
+        stream_id,
         request->heartbeat_timeout_ms(),
         request->decode_interval_ms(),
         static_cast<int>(decoder_type),
         gpu_id,
         request->keep_on_failure(),
+        request->use_shared_mem(),
         std::move(decoder),
         encoder);
-
-    std::string stream_id = generate_uuid();
 
     // 双重检查锁定（Double-Checked Locking）
     {

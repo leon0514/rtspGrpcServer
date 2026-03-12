@@ -29,9 +29,10 @@ message StartRequest {
     string rtsp_url = 1;
     int32 heartbeat_timeout_ms = 2; 
     int32 decode_interval_ms = 3;   
-    DecoderType decoder_type = 4;   // 指定解码器类型
-    int32 gpu_id = 5;               // GPU ID，仅对 GPU 解码有效，默认 0
-    bool keep_on_failure = 6;       // 打开失败时是否保留任务，默认 false（即自动删除）
+    DecoderType decoder_type = 4;    // 指定解码器类型
+    int32 gpu_id = 5;                // GPU ID，仅对 GPU 解码有效，默认 0
+    bool keep_on_failure = 6;        // 打开失败时是否保留任务，默认 false（即自动删除）
+    bool use_shared_mem = 7; // 是否写入共享内存
 }
 
 message StartResponse {

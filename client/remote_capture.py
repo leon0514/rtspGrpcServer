@@ -109,11 +109,12 @@ class RemoteCapture:
     
     def start_stream(self,
                      rtsp_url: str,
-                     heartbeat_timeout_ms: int = 10000,
+                     heartbeat_timeout_ms: int = 100000,
                      decode_interval_ms: int = 0,
                      decoder_type: int = DECODER_CPU_FFMPEG,
                      gpu_id: int = 0,
-                     keep_on_failure: bool = False) -> Optional[str]:
+                     keep_on_failure: bool = False,
+                     use_shared_mem: bool = False) -> Optional[str]:
         """
         启动一个新的 RTSP 流
         :param rtsp_url: RTSP 地址
@@ -136,7 +137,8 @@ class RemoteCapture:
                 decode_interval_ms=decode_interval_ms,
                 decoder_type=decoder_type,
                 gpu_id=gpu_id,
-                keep_on_failure=keep_on_failure
+                keep_on_failure=keep_on_failure,
+                use_shared_mem=use_shared_mem
             )
             resp = self.stub.StartStream(req, timeout=10)
             

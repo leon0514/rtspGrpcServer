@@ -17,9 +17,9 @@ from remote_capture import (
 import os
 
 # default address can still be overridden via environment var
-SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50051")
-RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1001"
-# RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
+SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50052")
+# RTSP_URL = "rtsp://admin:Admin12345@219.129.97.98:2011/Streaming/channels/101"
+RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
 # RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501"
 
 
@@ -119,7 +119,7 @@ def example_stream_frames():
             if ret:
                 frame_count += 1
                 print(f"接收帧: {frame_count}")
-                # cv2.imwrite(f"images/capture_{frame_count}.jpg", frame)
+                cv2.imwrite(f"images/capture_{frame_count}.jpg", frame)
             else:
                 status = client.get_stream_status(stream_id)
                 if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):

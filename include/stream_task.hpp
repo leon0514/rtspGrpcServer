@@ -9,6 +9,7 @@
 #include <vector>
 #include <chrono>
 #include <condition_variable>
+#include "zero_copy_channel.hpp"
 
 enum class StreamStatus
 {
@@ -22,11 +23,13 @@ class StreamTask : public std::enable_shared_from_this<StreamTask>
 {
 public:
     StreamTask(const std::string &url,
+               const std::string &stream_id,
                int heartbeat_timeout_ms,
                int decode_interval_ms,
                int decoder_type,
                int gpu_id,
                bool keep_on_failure,
+               bool use_shared_mem,
                std::unique_ptr<IVideoDecoder> decoder,
                std::shared_ptr<IImageEncoder> encoder);
 
@@ -78,14 +81,18 @@ private:
 
     // --- 成员变量 ---
     std::string url_;
+    std::string stream_id_;
     int heartbeat_timeout_ms_;
     int decode_interval_ms_;
     int decoder_type_;
     bool keep_on_failure_;
+    bool use_shared_mem_;
     int gpu_id_ = -1;
 
     std::unique_ptr<IVideoDecoder> decoder_;
     std::shared_ptr<IImageEncoder> encoder_;
+
+    std::unique_ptr<ZeroCopyChannel> shm_channel_;
 
     // 状态控制
     std::atomic<bool> running_{false};

@@ -427,13 +427,19 @@ namespace FFHDDemuxer
             if (string_begin_with(uri, "rtsp://"))
             {
                 av_dict_set(&options, "rtsp_transport", "tcp", 0);
-                av_dict_set(&options, "buffer_size", "1024000", 0);
-                av_dict_set(&options, "stimeout", "2000000", 0);
-                // 大幅降低 FFmpeg 探测流时的最大缓存包大小和时间
-                // 这不仅能让开流速度从几秒变到毫秒级，还能避免在流断开时残留巨大的 Probe Buffer
-                av_dict_set(&options, "probesize", "500000", 0);        // 限制最大探测数据为 500KB
-                av_dict_set(&options, "analyzeduration", "1000000", 0); // 限制探测时间为 1秒
+                av_dict_set(&options, "buffer_size", "10485760", 0); // 10MB 底层网络防抖缓存
+                av_dict_set(&options, "stimeout", "3000000", 0);     // 3秒超时
+
+                // 【权衡后的探测参数】
+                // 1MB - 2MB 是高清 HEVC 的安全线，足以容纳一个最大关键帧，又不会导致退流时残留太多
+                av_dict_set(&options, "probesize", "2048000", 0);       
+                av_dict_set(&options, "analyzeduration", "2000000", 0); // 最多探测 2 秒
+                // 减少分析过程中的多余丢包等待
+                av_dict_set(&options, "flags", "low_delay", 0);
+                // 如果你只需要视频不要音频，直接告诉 FFmpeg 别去花时间找音频流了
+                av_dict_set(&options, "allowed_media_types", "video", 0);
             }
+
 
             AVFormatContext *ctx = nullptr;
             int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, &options);

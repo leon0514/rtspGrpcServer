@@ -7,19 +7,23 @@
 #include "cuda_tools.hpp"
 
 StreamTask::StreamTask(const std::string &url,
+                       const std::string &stream_id,
                        int heartbeat_timeout_ms,
                        int decode_interval_ms,
                        int decoder_type,
                        int gpu_id,
                        bool keep_on_failure,
+                       bool use_shared_mem,
                        std::unique_ptr<IVideoDecoder> decoder,
                        std::shared_ptr<IImageEncoder> encoder)
     : url_(url),
+      stream_id_(stream_id),
       heartbeat_timeout_ms_(heartbeat_timeout_ms),
       decode_interval_ms_(decode_interval_ms),
       decoder_type_(decoder_type),
       gpu_id_(gpu_id),
       keep_on_failure_(keep_on_failure),
+      use_shared_mem_(use_shared_mem),
       decoder_(std::move(decoder)),
       encoder_(std::move(encoder))
 {
@@ -27,6 +31,16 @@ StreamTask::StreamTask(const std::string &url,
     frame_pool_ = std::make_shared<FrameMemoryPool>(3 * 1024 * 1024);
     updateHeartbeat();
     last_encode_time_ = std::chrono::steady_clock::now();
+
+    if (use_shared_mem_) {
+        try {
+            shm_channel_ = std::make_unique<ZeroCopyChannel>(stream_id_, 0); // 生产者角色
+            spdlog::info("SharedMemory enabled for stream: {}", stream_id_);
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to init SHM: {}", e.what());
+            use_shared_mem_ = false;
+        }
+    }
 }
 
 StreamTask::~StreamTask()
@@ -105,6 +119,12 @@ void StreamTask::stop()
         if (frame_pool_)
         {
             frame_pool_.reset();
+        }
+
+        if (shm_channel_)
+        {
+            shm_channel_->cleanup();
+            shm_channel_.reset();
         }
 
         status_ = StreamStatus::DISCONNECTED;
@@ -258,6 +278,12 @@ void StreamTask::stepCompute()
         CUDATools::AutoDevice auto_device_exchange(gpu_id_);
     }
 
+    if (use_shared_mem_ && shm_channel_)
+    {
+        keepAlive();
+        // 继续执行编码和通知订阅者，但不使用共享内存
+    }   
+
     std::unique_lock<std::mutex> lock(decoder_mutex_);
     if (!decoder_ || !decoder_->isOpened())
     {
@@ -297,6 +323,19 @@ void StreamTask::stepCompute()
     // 通知订阅者
     if (encode_ok)
     {
+        if (use_shared_mem_ && shm_channel_) 
+        {
+            auto now = std::chrono::steady_clock::now();
+            uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now.time_since_epoch()).count();
+            uint32_t width = decoder_->getWidth();
+            uint32_t height = decoder_->getHeight();
+            // spdlog::info("Writing frame to SHM: size={} bytes, resolution={}x{}, timestamp={}", 
+            //              encode_buffer->size(), width, height, ts);
+            shm_channel_->write_frame(reinterpret_cast<const uint8_t*>(encode_buffer->data()), 
+                                      encode_buffer->size(), width, height, ts);
+        }
+
         {
             std::lock_guard<std::mutex> frame_lock(frame_mutex_);
             latest_encoded_frame_ = encode_buffer;

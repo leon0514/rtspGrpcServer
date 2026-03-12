@@ -181,7 +181,7 @@ int main(int argc, char **argv)
     TimerScheduler::instance().start();
 
     // 5. 启动 gRPC 服务
-    grpc::EnableDefaultHealthCheckService(true);
+    // grpc::EnableDefaultHealthCheckService(true);
     grpc::reflection::InitProtoReflectionServerBuilderPlugin();
 
     RTSPServiceImpl service;
