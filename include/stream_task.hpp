@@ -122,7 +122,7 @@ private:
     std::condition_variable sleep_cv_;
 
     std::condition_variable frame_cv_;
-    uint64_t frame_seq_{0};
+    std::atomic<uint64_t> frame_seq_{0}; 
 
     // 用于 CPU 路径的图像缓存，避免反复分配 cv::Mat
     cv::Mat reusable_frame_;

@@ -89,47 +89,44 @@ void StreamTask::start()
 void StreamTask::stop()
 {
     bool expected = true;
-    if (running_.compare_exchange_strong(expected, false))
+    if (!running_.compare_exchange_strong(expected, false))
     {
-        spdlog::info("StreamTask stopping: {}", url_);
-        stopped_ = true;
+        return;
+    }
 
-        // 唤醒所有等待的条件变量
-        {
-            std::lock_guard<std::mutex> sleep_lock(sleep_mutex_);
-            sleep_cv_.notify_all();
-        }
-        {
-            std::lock_guard<std::mutex> frame_lock(frame_mutex_);
-            frame_cv_.notify_all();
-        }
+    spdlog::info("StreamTask stopping: {}", url_);
+    stopped_ = true;
 
-        // 注意：这里可能会短暂阻塞，等待 stepIO/stepCompute 释放锁
+    {
+        std::unique_lock<std::mutex> sleep_lock(sleep_mutex_);
+        sleep_cv_.notify_all();
+    }
+
+    std::shared_ptr<std::string> old_frame_to_release;
+    {
+        std::lock_guard<std::mutex> frame_lock(frame_mutex_);
+        old_frame_to_release = std::move(latest_encoded_frame_); // 此时 latest_encoded_frame_ 变为空
+        frame_cv_.notify_all();
+    }
+
+    {
         std::lock_guard<std::mutex> lock(decoder_mutex_);
         if (decoder_)
         {
             decoder_->release();
         }
-
-        {
-            std::lock_guard<std::mutex> frame_lock(frame_mutex_);
-            latest_encoded_frame_.reset();
-        }
-
-        if (frame_pool_)
-        {
-            frame_pool_.reset();
-        }
-
-        if (shm_channel_)
-        {
-            shm_channel_->cleanup();
-            shm_channel_.reset();
-        }
-
-        status_ = StreamStatus::DISCONNECTED;
-        connected_ = false;
     }
+
+    // 5. 共享内存清理
+    if (shm_channel_)
+    {
+        shm_channel_->cleanup();
+        shm_channel_.reset(); // 安全重置
+    }
+
+    // 6. 状态重置
+    status_ = StreamStatus::DISCONNECTED;
+    connected_ = false;
 }
 
 void StreamTask::scheduleNext(int force_delay_ms)
@@ -336,11 +333,13 @@ void StreamTask::stepCompute()
                                       encode_buffer->size(), width, height, ts);
         }
 
+        std::shared_ptr<std::string> prev_frame;
         {
             std::lock_guard<std::mutex> frame_lock(frame_mutex_);
-            latest_encoded_frame_ = encode_buffer;
+            prev_frame = std::move(latest_encoded_frame_); // 把旧的移出去
+            latest_encoded_frame_ = encode_buffer;         // 放新的进去
             last_encode_time_ = std::chrono::steady_clock::now();
-            frame_seq_++;
+            frame_seq_.fetch_add(1, std::memory_order_release);
         }
         frame_cv_.notify_all();
     }
@@ -374,21 +373,18 @@ bool StreamTask::waitForNextFrame(std::shared_ptr<std::string> &out_buffer, uint
     updateHeartbeat();
     std::unique_lock<std::mutex> lock(frame_mutex_);
 
-    bool signaled = frame_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this, current_seq]()
-                                       { return frame_seq_ > current_seq || !running_.load(); });
+    // 使用 wait_for 等待新序列号
+    bool signaled = frame_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this, current_seq]() {
+        return frame_seq_.load(std::memory_order_acquire) > current_seq || !running_.load();
+    });
 
-    if (!running_.load() || !latest_encoded_frame_)
-    {
-        return false;
-    }
+    if (!running_.load() || !latest_encoded_frame_) return false;
 
-    if (signaled && frame_seq_ > current_seq)
-    {
+    if (signaled && frame_seq_.load() > current_seq) {
         out_buffer = latest_encoded_frame_;
-        current_seq = frame_seq_;
+        current_seq = frame_seq_.load();
         return true;
     }
-
     return false;
 }
 
