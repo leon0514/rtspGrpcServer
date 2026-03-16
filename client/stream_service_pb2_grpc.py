@@ -64,6 +64,11 @@ class RTSPStreamServiceStub(object):
                 request_serializer=stream__service__pb2.ListStreamsRequest.SerializeToString,
                 response_deserializer=stream__service__pb2.ListStreamsResponse.FromString,
                 _registered_method=True)
+        self.UpdateStream = channel.unary_unary(
+                '/streamingservice.RTSPStreamService/UpdateStream',
+                request_serializer=stream__service__pb2.UpdateStreamRequest.SerializeToString,
+                response_deserializer=stream__service__pb2.UpdateStreamResponse.FromString,
+                _registered_method=True)
 
 
 class RTSPStreamServiceServicer(object):
@@ -107,6 +112,13 @@ class RTSPStreamServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def UpdateStream(self, request, context):
+        """更新流信息
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RTSPStreamServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -139,6 +151,11 @@ def add_RTSPStreamServiceServicer_to_server(servicer, server):
                     servicer.ListStreams,
                     request_deserializer=stream__service__pb2.ListStreamsRequest.FromString,
                     response_serializer=stream__service__pb2.ListStreamsResponse.SerializeToString,
+            ),
+            'UpdateStream': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateStream,
+                    request_deserializer=stream__service__pb2.UpdateStreamRequest.FromString,
+                    response_serializer=stream__service__pb2.UpdateStreamResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -303,6 +320,33 @@ class RTSPStreamService(object):
             '/streamingservice.RTSPStreamService/ListStreams',
             stream__service__pb2.ListStreamsRequest.SerializeToString,
             stream__service__pb2.ListStreamsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/streamingservice.RTSPStreamService/UpdateStream',
+            stream__service__pb2.UpdateStreamRequest.SerializeToString,
+            stream__service__pb2.UpdateStreamResponse.FromString,
             options,
             channel_credentials,
             insecure,

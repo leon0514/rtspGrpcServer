@@ -404,3 +404,49 @@ void RTSPServiceImpl::cleanupLoop()
 #endif
     }
 }
+
+
+grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context, 
+                                           const streamingservice::UpdateStreamRequest *request, 
+                                           streamingservice::UpdateStreamResponse *response)
+{
+    std::string stream_id = request->stream_id();
+    const std::string &new_url = request->new_rtsp_url();
+    std::shared_ptr<StreamTask> task;
+
+    {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        
+        // 1. 找到对应的 Task
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            response->set_success(false);
+            response->set_message("Stream ID not found");
+            return grpc::Status::OK;
+        }
+        task = it->second;
+
+        // 2. 检查新 URL 是否已被其他 Task 占用 (防止重复)
+        auto url_it = url_to_id_.find(new_url);
+        if (url_it != url_to_id_.end() && url_it->second != stream_id) {
+            response->set_success(false);
+            response->set_message("New URL already in use by another task");
+            return grpc::Status::OK;
+        }
+
+        // 3. 重要：同步更新索引 Map
+        std::string old_url = task->getUrl();
+        if (old_url != new_url) {
+            url_to_id_.erase(old_url);      // 删掉旧索引
+            url_to_id_[new_url] = stream_id; // 建立新索引
+            spdlog::info("[MAP UPDATE] Swapped URL index for ID: {}", stream_id);
+        }
+    } // 锁在这里释放，避免后续 Task 处理阻塞 gRPC 响应
+
+    // 4. 发出切换信号
+    task->updateUrl(new_url);
+
+    response->set_success(true);
+    response->set_message("URL updated in management map, task will reconnect.");
+    return grpc::Status::OK;
+}

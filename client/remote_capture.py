@@ -339,6 +339,47 @@ class RemoteCapture:
         except grpc.RpcError as e:
             logging.error(f"流式读取异常: {e.details()}")
     
+
+    def update_stream_url(self, stream_id: str, new_rtsp_url: str) -> bool:
+        """
+        更新流的 RTSP URL
+        :param stream_id: 流 ID
+        :param new_rtsp_url: 新的 RTSP URL
+        :return: 是否更新成功
+        """
+        if not self.stub:
+            logging.error("未连接到服务器")
+            return False
+        
+        try:
+            req = stream_service_pb2.UpdateStreamRequest(stream_id=stream_id, new_rtsp_url=new_rtsp_url)
+            resp = self.stub.UpdateStream(req, timeout=5)
+            
+            if resp.success:
+                logging.info(f"流 URL 已更新: {stream_id} -> {new_rtsp_url}")
+            else:
+                logging.warning(f"更新流 URL 失败: {resp.message}")
+            return resp.success
+        except grpc.RpcError as e:
+            logging.error(f"更新流 URL 异常: {e.details()}")
+            return False
+
+    def update_stream_url_isolated(self, stream_id: str, new_rtsp_url: str) -> bool:
+        """使用独立连接更新，防止头部阻塞"""
+        with grpc.insecure_channel(self.server_address) as channel:
+            stub = stream_service_pb2_grpc.RTSPStreamServiceStub(channel)
+            try:
+                req = stream_service_pb2.UpdateStreamRequest(stream_id=stream_id, new_rtsp_url=new_rtsp_url)
+                resp = stub.UpdateStream(req, timeout=5)
+                if resp.success:
+                        logging.info(f"流 URL 已更新: {stream_id} -> {new_rtsp_url}")
+                else:
+                    logging.warning(f"更新流 URL 失败: {resp.message}")
+                return resp.success
+            except grpc.RpcError as e:
+                logging.error(f"更新流 URL 异常: {e.details()}")
+                return False
+
     # ==================== 上下文管理 ====================
     
     def __enter__(self):

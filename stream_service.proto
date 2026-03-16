@@ -23,6 +23,7 @@ service RTSPStreamService {
     rpc StreamFrames (StreamRequest) returns (stream FrameResponse);  // 流式传输
     rpc CheckStream (CheckRequest) returns (CheckResponse);
     rpc ListStreams (ListStreamsRequest) returns (ListStreamsResponse);  // 查询所有流
+    rpc UpdateStream (UpdateStreamRequest) returns (UpdateStreamResponse);  // 更新流信息
 }
 
 message StartRequest {
@@ -100,4 +101,14 @@ message StreamInfo {
 message ListStreamsResponse {
     int32 total_count = 1;         // 流总数
     repeated StreamInfo streams = 2;  // 流列表
+}
+
+message UpdateStreamRequest {
+  string stream_id = 1;
+  string new_rtsp_url = 2;
+}
+
+message UpdateStreamResponse {
+  bool success = 1;
+  string message = 2;
 }

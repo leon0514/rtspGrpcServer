@@ -23,15 +23,16 @@ service RTSPStreamService {
     rpc StreamFrames (StreamRequest) returns (stream FrameResponse);  // 流式传输
     rpc CheckStream (CheckRequest) returns (CheckResponse);
     rpc ListStreams (ListStreamsRequest) returns (ListStreamsResponse);  // 查询所有流
+    rpc UpdateStream (UpdateStreamRequest) returns (UpdateStreamResponse);  // 更新流信息
 }
 
 message StartRequest {
     string rtsp_url = 1;
     int32 heartbeat_timeout_ms = 2; 
     int32 decode_interval_ms = 3;   
-    DecoderType decoder_type = 4;   // 指定解码器类型
-    int32 gpu_id = 5;               // GPU ID，仅对 GPU 解码有效，默认 0
-    bool keep_on_failure = 6;       // 打开失败时是否保留任务，默认 false（即自动删除）
+    DecoderType decoder_type = 4;    // 指定解码器类型
+    int32 gpu_id = 5;                // GPU ID，仅对 GPU 解码有效，默认 0
+    bool keep_on_failure = 6;        // 打开失败时是否保留任务，默认 false（即自动删除）
     bool use_shared_mem = 7; // 是否写入共享内存
     bool only_key_frames = 8; // 是否只解码关键帧
 }
@@ -100,4 +101,14 @@ message StreamInfo {
 message ListStreamsResponse {
     int32 total_count = 1;         // 流总数
     repeated StreamInfo streams = 2;  // 流列表
+}
+
+message UpdateStreamRequest {
+  string stream_id = 1;
+  string new_rtsp_url = 2;
+}
+
+message UpdateStreamResponse {
+  bool success = 1;
+  string message = 2;
 }

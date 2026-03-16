@@ -166,8 +166,19 @@ void StreamTask::stepIO()
         return;
 
     std::unique_lock<std::mutex> lock(decoder_mutex_);
+
+    if (url_changed_) {
+        spdlog::info("IO Thread: Switching to new URL: {}", pending_url_);
+        url_ = pending_url_;
+        url_changed_ = false;
+        if (decoder_) {
+            decoder_->release(); // 在 IO 线程释放，不卡 gRPC 线程
+        }
+    }
+
     if (!decoder_)
         return;
+    
 
     // 1. 处理连接断开重连逻辑
     if (!decoder_->isOpened())
@@ -415,4 +426,16 @@ bool StreamTask::isTimeout()
                            std::chrono::steady_clock::duration(now - last_access))
                            .count();
     return duration_ms > heartbeat_timeout_ms_;
+}
+
+
+void StreamTask::updateUrl(const std::string& new_url) {
+    // 这里只设置 pending 状态，不执行耗时的 release
+    std::lock_guard<std::mutex> lock(decoder_mutex_);
+    if (url_ != new_url) {
+        pending_url_ = new_url;
+        url_changed_ = true; // 原子标记 URL 已经改变，等待 stepIO() 循环自然处理
+        spdlog::info("StreamTask URL updated: {} -> {}", url_, new_url);
+        status_ = StreamStatus::CONNECTING;
+    }
 }

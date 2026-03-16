@@ -62,6 +62,8 @@ public:
     void keepAlive();
     bool isTimeout();
 
+    void updateUrl(const std::string& new_url);
+
 private:
     void updateHeartbeat();
 
@@ -78,9 +80,11 @@ private:
 
     // 返回 false 表示休眠被 stop() 中断；返回 true 表示休眠正常结束
     bool interruptibleSleep(int ms);
-
+    
     // --- 成员变量 ---
     std::string url_;
+    std::string pending_url_;
+    std::atomic<bool> url_changed_{false};
     std::string stream_id_;
     int heartbeat_timeout_ms_;
     int decode_interval_ms_;
