@@ -42,7 +42,7 @@ def test_start_stream(rtsp_url):
         "decodeIntervalMs": 33,
         "decoderType": "DECODER_CPU_FFMPEG",
         "keepOnFailure": False,
-        "onlyKeyFrame": False
+        "onlyKeyFrame": True
     }
     resp = session.post(f"{BASE_URL}/v1/streams/start", json=payload)
     assert resp.status_code == 200
@@ -67,6 +67,9 @@ def test_get_latest_frame(stream_id):
     data = resp.json()
     assert "imageData" in data
     logger.info(f"获取帧成功，Base64长度: {len(data['imageData'])}")
+    if len(data["imageData"]) == 0 :
+        logger.warning("Base64数据长度异常，可能未正确获取帧")
+        return None
     image = base64_to_image(data["imageData"])
     return image
 
@@ -113,8 +116,12 @@ if __name__ == "__main__":
             status = status_info.get("status")
             logger.info(f"当前流状态: {status}")
             time.sleep(1)
-        image = test_get_latest_frame(sid)
-        cv2.imwrite("latest_frame.jpg", image)  # 保存最新帧到本地
+        
+        for _ in range(100):
+            image = None
+            while image is None:
+                image = test_get_latest_frame(sid)
+            cv2.imwrite("latest_frame.jpg", image)  # 保存最新帧到本地
         # test_update_stream(sid, "rtsp://new_url")
         # test_stream_frames_chunked(sid)
         

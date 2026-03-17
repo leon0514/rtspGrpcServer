@@ -63,6 +63,7 @@ public:
     bool isTimeout();
 
     void updateUrl(const std::string& new_url);
+    int getFrameSequence() const { return frame_seq_.load(); }
 
 private:
     void updateHeartbeat();

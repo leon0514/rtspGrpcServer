@@ -42,9 +42,10 @@
 | | `width` | integer | 图像宽 |
 | | `height` | integer | 图像高 |
 | | `decodeIntervalMs` | integer | 解码间隔 |
-| **FrameResponse** | `success` | boolean | 操作成功标志 |
+| **FrameResponse**| `success` | boolean | 操作成功标志 |
 | | `imageData` | string | Base64 格式的图像二进制 |
 | | `message` | string | 状态或错误描述 |
+| | `frameSeq` | integer | 图像帧序列号 |
 | **CheckResponse** | `status` | enum | 当前连接状态 |
 | | `message` | string | 状态消息 |
 | | `rtspUrl` | string | 流 URL |

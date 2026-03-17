@@ -336,6 +336,10 @@
         },
         "message": {
           "type": "string"
+        },
+        "frameSeq": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },

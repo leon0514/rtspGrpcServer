@@ -24,17 +24,17 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14stream_service.proto\x12\x10streamingservice\"\xe9\x01\n\x0cStartRequest\x12\x10\n\x08rtsp_url\x18\x01 \x01(\t\x12\x1c\n\x14heartbeat_timeout_ms\x18\x02 \x01(\x05\x12\x1a\n\x12\x64\x65\x63ode_interval_ms\x18\x03 \x01(\x05\x12\x33\n\x0c\x64\x65\x63oder_type\x18\x04 \x01(\x0e\x32\x1d.streamingservice.DecoderType\x12\x0e\n\x06gpu_id\x18\x05 \x01(\x05\x12\x17\n\x0fkeep_on_failure\x18\x06 \x01(\x08\x12\x16\n\x0euse_shared_mem\x18\x07 \x01(\x08\x12\x17\n\x0fonly_key_frames\x18\x08 \x01(\x08\"D\n\rStartResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x11\n\tstream_id\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\" \n\x0bStopRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\"0\n\x0cStopResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"!\n\x0c\x46rameRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\"3\n\rStreamRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x0f\n\x07max_fps\x18\x02 \x01(\x05\"E\n\rFrameResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x12\n\nimage_data\x18\x02 \x01(\x0c\x12\x0f\n\x07message\x18\x03 \x01(\t\"!\n\x0c\x43heckRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\"\xd2\x01\n\rCheckResponse\x12.\n\x06status\x18\x01 \x01(\x0e\x32\x1e.streamingservice.StreamStatus\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x10\n\x08rtsp_url\x18\x03 \x01(\t\x12\x33\n\x0c\x64\x65\x63oder_type\x18\x04 \x01(\x0e\x32\x1d.streamingservice.DecoderType\x12\r\n\x05width\x18\x05 \x01(\x05\x12\x0e\n\x06height\x18\x06 \x01(\x05\x12\x1a\n\x12\x64\x65\x63ode_interval_ms\x18\x07 \x01(\x05\"\x14\n\x12ListStreamsRequest\"\xd1\x01\n\nStreamInfo\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x10\n\x08rtsp_url\x18\x02 \x01(\t\x12.\n\x06status\x18\x03 \x01(\x0e\x32\x1e.streamingservice.StreamStatus\x12\x33\n\x0c\x64\x65\x63oder_type\x18\x04 \x01(\x0e\x32\x1d.streamingservice.DecoderType\x12\r\n\x05width\x18\x05 \x01(\x05\x12\x0e\n\x06height\x18\x06 \x01(\x05\x12\x1a\n\x12\x64\x65\x63ode_interval_ms\x18\x07 \x01(\x05\"Y\n\x13ListStreamsResponse\x12\x13\n\x0btotal_count\x18\x01 \x01(\x05\x12-\n\x07streams\x18\x02 \x03(\x0b\x32\x1c.streamingservice.StreamInfo\">\n\x13UpdateStreamRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x14\n\x0cnew_rtsp_url\x18\x02 \x01(\t\"8\n\x14UpdateStreamResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t*>\n\x0b\x44\x65\x63oderType\x12\x16\n\x12\x44\x45\x43ODER_CPU_FFMPEG\x10\x00\x12\x17\n\x13\x44\x45\x43ODER_GPU_NVCUVID\x10\x01*j\n\x0cStreamStatus\x12\x15\n\x11STATUS_CONNECTING\x10\x00\x12\x14\n\x10STATUS_CONNECTED\x10\x01\x12\x17\n\x13STATUS_DISCONNECTED\x10\x02\x12\x14\n\x10STATUS_NOT_FOUND\x10\x03\x32\xe2\x04\n\x11RTSPStreamService\x12N\n\x0bStartStream\x12\x1e.streamingservice.StartRequest\x1a\x1f.streamingservice.StartResponse\x12K\n\nStopStream\x12\x1d.streamingservice.StopRequest\x1a\x1e.streamingservice.StopResponse\x12Q\n\x0eGetLatestFrame\x12\x1e.streamingservice.FrameRequest\x1a\x1f.streamingservice.FrameResponse\x12R\n\x0cStreamFrames\x12\x1f.streamingservice.StreamRequest\x1a\x1f.streamingservice.FrameResponse0\x01\x12N\n\x0b\x43heckStream\x12\x1e.streamingservice.CheckRequest\x1a\x1f.streamingservice.CheckResponse\x12Z\n\x0bListStreams\x12$.streamingservice.ListStreamsRequest\x1a%.streamingservice.ListStreamsResponse\x12]\n\x0cUpdateStream\x12%.streamingservice.UpdateStreamRequest\x1a&.streamingservice.UpdateStreamResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14stream_service.proto\x12\x10streamingservice\"\xe9\x01\n\x0cStartRequest\x12\x10\n\x08rtsp_url\x18\x01 \x01(\t\x12\x1c\n\x14heartbeat_timeout_ms\x18\x02 \x01(\x05\x12\x1a\n\x12\x64\x65\x63ode_interval_ms\x18\x03 \x01(\x05\x12\x33\n\x0c\x64\x65\x63oder_type\x18\x04 \x01(\x0e\x32\x1d.streamingservice.DecoderType\x12\x0e\n\x06gpu_id\x18\x05 \x01(\x05\x12\x17\n\x0fkeep_on_failure\x18\x06 \x01(\x08\x12\x16\n\x0euse_shared_mem\x18\x07 \x01(\x08\x12\x17\n\x0fonly_key_frames\x18\x08 \x01(\x08\"D\n\rStartResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x11\n\tstream_id\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\" \n\x0bStopRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\"0\n\x0cStopResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"!\n\x0c\x46rameRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\"3\n\rStreamRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x0f\n\x07max_fps\x18\x02 \x01(\x05\"X\n\rFrameResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x12\n\nimage_data\x18\x02 \x01(\x0c\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x11\n\tframe_seq\x18\x04 \x01(\x05\"!\n\x0c\x43heckRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\"\xd2\x01\n\rCheckResponse\x12.\n\x06status\x18\x01 \x01(\x0e\x32\x1e.streamingservice.StreamStatus\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x10\n\x08rtsp_url\x18\x03 \x01(\t\x12\x33\n\x0c\x64\x65\x63oder_type\x18\x04 \x01(\x0e\x32\x1d.streamingservice.DecoderType\x12\r\n\x05width\x18\x05 \x01(\x05\x12\x0e\n\x06height\x18\x06 \x01(\x05\x12\x1a\n\x12\x64\x65\x63ode_interval_ms\x18\x07 \x01(\x05\"\x14\n\x12ListStreamsRequest\"\xd1\x01\n\nStreamInfo\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x10\n\x08rtsp_url\x18\x02 \x01(\t\x12.\n\x06status\x18\x03 \x01(\x0e\x32\x1e.streamingservice.StreamStatus\x12\x33\n\x0c\x64\x65\x63oder_type\x18\x04 \x01(\x0e\x32\x1d.streamingservice.DecoderType\x12\r\n\x05width\x18\x05 \x01(\x05\x12\x0e\n\x06height\x18\x06 \x01(\x05\x12\x1a\n\x12\x64\x65\x63ode_interval_ms\x18\x07 \x01(\x05\"Y\n\x13ListStreamsResponse\x12\x13\n\x0btotal_count\x18\x01 \x01(\x05\x12-\n\x07streams\x18\x02 \x03(\x0b\x32\x1c.streamingservice.StreamInfo\">\n\x13UpdateStreamRequest\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x14\n\x0cnew_rtsp_url\x18\x02 \x01(\t\"8\n\x14UpdateStreamResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t*>\n\x0b\x44\x65\x63oderType\x12\x16\n\x12\x44\x45\x43ODER_CPU_FFMPEG\x10\x00\x12\x17\n\x13\x44\x45\x43ODER_GPU_NVCUVID\x10\x01*j\n\x0cStreamStatus\x12\x15\n\x11STATUS_CONNECTING\x10\x00\x12\x14\n\x10STATUS_CONNECTED\x10\x01\x12\x17\n\x13STATUS_DISCONNECTED\x10\x02\x12\x14\n\x10STATUS_NOT_FOUND\x10\x03\x32\xe2\x04\n\x11RTSPStreamService\x12N\n\x0bStartStream\x12\x1e.streamingservice.StartRequest\x1a\x1f.streamingservice.StartResponse\x12K\n\nStopStream\x12\x1d.streamingservice.StopRequest\x1a\x1e.streamingservice.StopResponse\x12Q\n\x0eGetLatestFrame\x12\x1e.streamingservice.FrameRequest\x1a\x1f.streamingservice.FrameResponse\x12R\n\x0cStreamFrames\x12\x1f.streamingservice.StreamRequest\x1a\x1f.streamingservice.FrameResponse0\x01\x12N\n\x0b\x43heckStream\x12\x1e.streamingservice.CheckRequest\x1a\x1f.streamingservice.CheckResponse\x12Z\n\x0bListStreams\x12$.streamingservice.ListStreamsRequest\x1a%.streamingservice.ListStreamsResponse\x12]\n\x0cUpdateStream\x12%.streamingservice.UpdateStreamRequest\x1a&.streamingservice.UpdateStreamResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'stream_service_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_DECODERTYPE']._serialized_start=1286
-  _globals['_DECODERTYPE']._serialized_end=1348
-  _globals['_STREAMSTATUS']._serialized_start=1350
-  _globals['_STREAMSTATUS']._serialized_end=1456
+  _globals['_DECODERTYPE']._serialized_start=1305
+  _globals['_DECODERTYPE']._serialized_end=1367
+  _globals['_STREAMSTATUS']._serialized_start=1369
+  _globals['_STREAMSTATUS']._serialized_end=1475
   _globals['_STARTREQUEST']._serialized_start=43
   _globals['_STARTREQUEST']._serialized_end=276
   _globals['_STARTRESPONSE']._serialized_start=278
@@ -48,21 +48,21 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_STREAMREQUEST']._serialized_start=467
   _globals['_STREAMREQUEST']._serialized_end=518
   _globals['_FRAMERESPONSE']._serialized_start=520
-  _globals['_FRAMERESPONSE']._serialized_end=589
-  _globals['_CHECKREQUEST']._serialized_start=591
-  _globals['_CHECKREQUEST']._serialized_end=624
-  _globals['_CHECKRESPONSE']._serialized_start=627
-  _globals['_CHECKRESPONSE']._serialized_end=837
-  _globals['_LISTSTREAMSREQUEST']._serialized_start=839
-  _globals['_LISTSTREAMSREQUEST']._serialized_end=859
-  _globals['_STREAMINFO']._serialized_start=862
-  _globals['_STREAMINFO']._serialized_end=1071
-  _globals['_LISTSTREAMSRESPONSE']._serialized_start=1073
-  _globals['_LISTSTREAMSRESPONSE']._serialized_end=1162
-  _globals['_UPDATESTREAMREQUEST']._serialized_start=1164
-  _globals['_UPDATESTREAMREQUEST']._serialized_end=1226
-  _globals['_UPDATESTREAMRESPONSE']._serialized_start=1228
-  _globals['_UPDATESTREAMRESPONSE']._serialized_end=1284
-  _globals['_RTSPSTREAMSERVICE']._serialized_start=1459
-  _globals['_RTSPSTREAMSERVICE']._serialized_end=2069
+  _globals['_FRAMERESPONSE']._serialized_end=608
+  _globals['_CHECKREQUEST']._serialized_start=610
+  _globals['_CHECKREQUEST']._serialized_end=643
+  _globals['_CHECKRESPONSE']._serialized_start=646
+  _globals['_CHECKRESPONSE']._serialized_end=856
+  _globals['_LISTSTREAMSREQUEST']._serialized_start=858
+  _globals['_LISTSTREAMSREQUEST']._serialized_end=878
+  _globals['_STREAMINFO']._serialized_start=881
+  _globals['_STREAMINFO']._serialized_end=1090
+  _globals['_LISTSTREAMSRESPONSE']._serialized_start=1092
+  _globals['_LISTSTREAMSRESPONSE']._serialized_end=1181
+  _globals['_UPDATESTREAMREQUEST']._serialized_start=1183
+  _globals['_UPDATESTREAMREQUEST']._serialized_end=1245
+  _globals['_UPDATESTREAMRESPONSE']._serialized_start=1247
+  _globals['_UPDATESTREAMRESPONSE']._serialized_end=1303
+  _globals['_RTSPSTREAMSERVICE']._serialized_start=1478
+  _globals['_RTSPSTREAMSERVICE']._serialized_end=2088
 # @@protoc_insertion_point(module_scope)

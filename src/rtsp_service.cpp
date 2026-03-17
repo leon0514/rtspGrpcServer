@@ -184,6 +184,7 @@ grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const
     {
         response->set_success(false);
         response->set_message("Stream ID not found or expired");
+        response->set_frame_seq(-1);
         return grpc::Status::OK;
     }
 
@@ -193,11 +194,13 @@ grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const
         response->set_success(true);
         response->set_image_data(*frame_ptr);
         response->set_message("OK");
+        response->set_frame_seq(task->getFrameSequence());
     }
     else
     {
         response->set_success(false);
         response->set_message("No frame available yet or stream disconnected");
+        response->set_frame_seq(-1);
     }
     return grpc::Status::OK;
 }
@@ -249,6 +252,7 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
             streamingservice::FrameResponse resp;
             resp.set_success(false);
             resp.set_message("Stream has been stopped");
+            resp.set_frame_seq(-1);
             writer->Write(resp);
             break;
         }
@@ -274,6 +278,7 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
         response.set_success(true);
         response.set_image_data(*encoded_frame);
         response.set_message("OK");
+        response.set_frame_seq(client_seq);
 
         if (!writer->Write(response))
         {

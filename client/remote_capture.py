@@ -298,23 +298,23 @@ class RemoteCapture:
         """
         获取指定流的最新帧
         :param stream_id: 流 ID
-        :return: (成功标志, 图像帧)
+        :return: (图像帧序列号, 图像帧)
         """
         if not self.stub:
-            return False, None
+            return -1, None
         
         try:
             req = stream_service_pb2.FrameRequest(stream_id=stream_id)
             resp = self.stub.GetLatestFrame(req, timeout=5)
-            
+            frame_seq = getattr(resp, "frame_seq", -1)
             if resp.success and resp.image_data:
                 img_array = np.frombuffer(resp.image_data, dtype=np.uint8)
                 img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 if img is not None:
-                    return True, img
-            return False, None
+                    return frame_seq, img
+            return frame_seq, None
         except grpc.RpcError:
-            return False, None
+            return -1, None
     
     def stream_frames(self, stream_id: str, max_fps: int = 0) -> Generator[Tuple[bool, Optional[np.ndarray]], None, None]:
         """
@@ -330,12 +330,12 @@ class RemoteCapture:
         try:
             req = stream_service_pb2.StreamRequest(stream_id=stream_id, max_fps=max_fps)
             for resp in self.stub.StreamFrames(req):                 
-                if resp.success and resp.image_data:
+                if resp.success and resp.image_data and resp.frame_seq != -1:
                     img_array = np.frombuffer(resp.image_data, dtype=np.uint8)
                     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    yield (img is not None, img)
+                    yield (resp.frame_seq, img)
                 else:
-                    yield (False, None)
+                    yield (-1, None)
         except grpc.RpcError as e:
             logging.error(f"流式读取异常: {e.details()}")
     

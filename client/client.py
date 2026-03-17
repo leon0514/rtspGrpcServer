@@ -50,7 +50,7 @@ def example_poll_frame():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0, only_key_frames=True)
         if not stream_id:
             return
         
@@ -72,8 +72,9 @@ def example_poll_frame():
             print("连接成功")
 
         while True:
-            ret, frame = client.read(stream_id)
-            if ret:
+            frame_seq, frame = client.read(stream_id)
+            if frame_seq != -1:
+                print(f"获取帧成功, 序列号: {frame_seq}")
                 cv2.imwrite("capture.jpg", frame)
             else:
                 status = client.get_stream_status(stream_id)
@@ -140,5 +141,5 @@ if __name__ == "__main__":
     # 运行示例 (取消注释需要运行的示例)
     
     # example_list_streams()
-    # example_poll_frame()
-    example_stream_frames()
+    example_poll_frame()
+    # example_stream_frames()

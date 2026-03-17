@@ -121,7 +121,9 @@ stream_id = client.start_stream(
     heartbeat_timeout_ms=30000,
     decode_interval_ms=100,
     gpu_id=0,
-    keep_on_failure=False
+    keep_on_failure=False,
+    use_shared_mem=False,
+    use_key_frames=False
 )
 print(f"流已启动: {stream_id}")
 ```
@@ -173,8 +175,8 @@ import cv2
 
 # 循环获取最新帧
 while True:
-    ret, frame = client.read(stream_id)
-    if ret:
+    frame_seq, frame = client.read(stream_id)
+    if frame_seq != -1:
         cv2.imshow('Frame', frame)
         if cv2.waitKey(30) & 0xFF == ord('q'):
             break
@@ -204,8 +206,8 @@ while True:
 import cv2
 
 # 流式接收，限制 15fps
-for ret, frame in client.stream_frames(stream_id, max_fps=15):
-    if ret:
+for frame_seq, frame in client.stream_frames(stream_id, max_fps=15):
+    if frame_seq != -1:
         cv2.imshow('Stream', frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
@@ -278,11 +280,10 @@ print(f"当前状态: {status_name}")  # "连接中" / "已连接" / "无法连�
 在流式传输过程中直接切换 URL：
 ```python
 # 示例：在接收帧的过程中动态切换地址
-for ret, frame in client.stream_frames(stream_id, max_fps=10):
-    if ret:
-        frame_count += 1
+for frame_seq, frame in client.stream_frames(stream_id, max_fps=10):
+    if frame_seq != -1:
         # 假设在第 50 帧时切换到备用摄像头
-        if frame_count == 50:
+        if frame_seq == 50:
             new_url = "rtsp://admin:password@172.16.22.16:554/Streaming/Channels/101"
             print(f"\n[Action] 正在切换流地址至: {new_url}")
             
@@ -375,8 +376,8 @@ with RemoteCapture('127.0.0.1:50051') as client:
     print(f"分辨率: {info['width']}x{info['height']}")
     
     # 5. 流式获取视频
-    for ret, frame in client.stream_frames(stream_id, max_fps=15):
-        if ret:
+    for frame_seq, frame in client.stream_frames(stream_id, max_fps=15):
+        if frame_seq != -1:
             cv2.imshow('Video', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
