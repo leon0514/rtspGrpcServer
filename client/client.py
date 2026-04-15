@@ -17,10 +17,10 @@ from remote_capture import (
 import os
 
 # default address can still be overridden via environment var
-SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50051")
+SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50052")
 RTSP_URL = "rtsp://admin:Admin12345@219.129.97.98:2011/Streaming/channels/101"
 # RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
-RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501"
+RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101"
 
 
 def example_list_streams():
@@ -53,7 +53,7 @@ def example_poll_frame():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0, only_key_frames=True)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=False)
         if not stream_id:
             return
         
@@ -99,7 +99,7 @@ def example_stream_frames():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0, only_key_frames=True)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=-1, only_key_frames=True)
         # stream_id = "50fdcc9dd42e15f7"
         if not stream_id:
             return

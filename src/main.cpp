@@ -155,14 +155,7 @@ int main(int argc, char **argv)
         return def;
     };
 
-    // ① IO 线程池：用于网络阻塞操作 (Demux/Download/重连)，IO密集型可适当多配
-    size_t io_threads = envUInt("RTSP_IO_THREADS", hardware_threads * 2);
-    if (io_threads == 0)
-        io_threads = 2;
-    if (io_threads > 64)
-        io_threads = 64; // 限制上限
-
-    // ② GPU 专属计算线程池 (单卡)：因为硬件解码(NVDEC)和编码(nvJPEG)都是扔给硬件做的，
+    // ① GPU 专属计算线程池 (单卡)：因为硬件解码(NVDEC)和编码(nvJPEG)都是扔给硬件做的，
     // C++ 线程只是负责“提交任务+等待”，不需要跟 CPU 核心数绑定。一般 4-8 个线程就能喂饱单张显卡。
     size_t gpu_threads_per_card = envUInt("RTSP_GPU_THREADS_PER_CARD", 6);
     if (gpu_threads_per_card == 0)
@@ -177,7 +170,7 @@ int main(int argc, char **argv)
     if (cpu_compute_threads > 64)
         cpu_compute_threads = 64;
 
-    TaskScheduler::instance().init(io_threads, gpu_threads_per_card, cpu_compute_threads);
+    TaskScheduler::instance().init(gpu_threads_per_card, cpu_compute_threads);
     TimerScheduler::instance().start();
 
     // 5. 启动 gRPC 服务

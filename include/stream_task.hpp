@@ -6,6 +6,8 @@
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
+#include <thread>
 #include <vector>
 #include <chrono>
 #include <condition_variable>
@@ -65,7 +67,7 @@ public:
     void keepAlive();
     bool isTimeout();
 
-    void updateUrl(const std::string& new_url);
+    void updateUrl(const std::string &new_url);
     int getFrameSequence() const { return frame_seq_.load(); }
 
 private:
@@ -78,13 +80,14 @@ private:
 
     // 阶段1：IO操作 (Demux / Grab / Network Read) -> 运行在 IO线程池
     void stepIO();
+    void ioLoop();
 
     // 阶段2：计算操作 (Decode / Convert / Encode) -> 运行在 计算线程池
     void stepCompute();
 
     // 返回 false 表示休眠被 stop() 中断；返回 true 表示休眠正常结束
     bool interruptibleSleep(int ms);
-    
+
     // --- 成员变量 ---
     std::string url_;
     std::string pending_url_;
@@ -111,8 +114,15 @@ private:
     // 保护 decoder_ 的互斥锁（防止多线程重入或与 stop 冲突）
     std::mutex decoder_mutex_;
 
-    // 保护最新帧数据的互斥锁
-    std::mutex frame_mutex_;
+    // 每路流独立 IO 线程
+    std::thread io_thread_;
+    std::mutex io_mutex_;
+    int next_io_delay_ms_ = 0;
+    std::atomic<bool> io_wakeup_{false};
+
+    // 保护最新帧数据的读写锁
+    std::shared_mutex frame_mutex_;
+    std::condition_variable_any frame_cv_;
     std::shared_ptr<std::string> latest_encoded_frame_;
 
     // 帧内存池
@@ -129,9 +139,11 @@ private:
     std::mutex sleep_mutex_;
     std::condition_variable sleep_cv_;
 
-    std::condition_variable frame_cv_;
-    std::atomic<uint64_t> frame_seq_{0}; 
+    std::atomic<uint64_t> frame_seq_{0};
 
     // 用于 CPU 路径的图像缓存，避免反复分配 cv::Mat
     cv::Mat reusable_frame_;
+
+    // 性能监控：记录 grab 结束时间，用于计算调度延迟
+    std::chrono::steady_clock::time_point last_grab_end_;
 };

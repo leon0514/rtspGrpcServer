@@ -105,20 +105,13 @@ namespace FFHDDecoder
                 return checkFFMPEG(avcodec_send_packet(m_ctx, nullptr));
             }
 
-            // 🔧 修复：先清空老状态
-            av_packet_unref(m_packet);
+            AVPacket packet;
+            av_init_packet(&packet);
+            packet.data = const_cast<uint8_t *>(pData);
+            packet.size = nSize;
+            packet.pts = pts;
 
-            m_packet->data = (uint8_t *)pData;
-            m_packet->size = nSize;
-            m_packet->pts = pts;
-
-            int ret = avcodec_send_packet(m_ctx, m_packet);
-
-            // 🔧 修复：绝对不能对没有 AVBufferRef 的伪装 packet 调用 unref！
-            // 手动将指针剥离，防止内部被错误释放
-            m_packet->data = nullptr;
-            m_packet->size = 0;
-
+            int ret = avcodec_send_packet(m_ctx, &packet);
             return checkFFMPEG(ret);
         }
 
@@ -155,6 +148,11 @@ namespace FFHDDecoder
         {
             if (!frame || !bgr_buffer)
                 return false;
+
+            if (!frame->data[0] || frame->width <= 0 || frame->height <= 0)
+            {
+                return false;
+            }
 
             AVPixelFormat src_fmt = (AVPixelFormat)frame->format;
             switch (src_fmt)

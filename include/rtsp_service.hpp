@@ -1,6 +1,7 @@
 #pragma once
 #include <unordered_map>
 #include <mutex>
+#include <shared_mutex>
 #include <memory>
 #include <thread>
 #include <atomic>
@@ -26,7 +27,7 @@ public:
 private:
     void cleanupLoop();
 
-    std::mutex map_mutex_;
+    std::shared_mutex map_mutex_;
     std::unordered_map<std::string, std::shared_ptr<StreamTask>> streams_;
     std::unordered_map<std::string, std::string> url_to_id_;
     std::atomic<bool> manager_running_;

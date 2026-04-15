@@ -25,7 +25,7 @@ RTSPServiceImpl::~RTSPServiceImpl()
         cleanup_thread_.join();
     }
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::lock_guard<std::shared_mutex> lock(map_mutex_);
         for (auto &pair : streams_)
         {
             if (pair.second)
@@ -42,7 +42,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
 
     // 使用 url_to_id_ 实现 O(1) 的快速查找，替代原来的 O(N) 遍历
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(map_mutex_);
         auto it = url_to_id_.find(req_url);
         if (it != url_to_id_.end())
         {
@@ -60,6 +60,8 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
             else
             {
                 // 防御性编程：如果 streams_ 中没有，但 url_to_id_ 中有，说明状态不一致，清理掉脏数据
+                lock.unlock();
+                std::lock_guard<std::shared_mutex> write_lock(map_mutex_);
                 url_to_id_.erase(it);
             }
         }
@@ -110,7 +112,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
 
     // 双重检查锁定（Double-Checked Locking）
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::lock_guard<std::shared_mutex> lock(map_mutex_);
         // 使用 url_to_id_ 进行 O(1) 的并发冲突检查
         auto it = url_to_id_.find(req_url);
         if (it != url_to_id_.end())
@@ -142,7 +144,7 @@ grpc::Status RTSPServiceImpl::StopStream(grpc::ServerContext *context, const str
     std::shared_ptr<StreamTask> task_to_stop;
 
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::lock_guard<std::shared_mutex> lock(map_mutex_);
         auto it = streams_.find(stream_id);
         if (it != streams_.end())
         {
@@ -172,7 +174,7 @@ grpc::Status RTSPServiceImpl::GetLatestFrame(grpc::ServerContext *context, const
     std::shared_ptr<StreamTask> task;
 
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(map_mutex_);
         auto it = streams_.find(stream_id);
         if (it != streams_.end())
         {
@@ -214,7 +216,7 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
 
     std::shared_ptr<StreamTask> task;
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(map_mutex_);
         auto it = streams_.find(stream_id);
         if (it != streams_.end())
         {
@@ -258,12 +260,10 @@ grpc::Status RTSPServiceImpl::StreamFrames(grpc::ServerContext *context,
         }
 
         bool has_new_frame = task->waitForNextFrame(encoded_frame, client_seq, 500);
-
         if (!has_new_frame)
         {
             continue;
         }
-
         if (frame_interval_us > 0)
         {
             auto now = std::chrono::steady_clock::now();
@@ -298,17 +298,17 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
     std::string stream_id = request->stream_id();
     std::shared_ptr<StreamTask> task;
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(map_mutex_);
         auto it = streams_.find(stream_id);
         if (it != streams_.end())
             task = it->second;
     }
 
     // 2. 获取响应中 StreamInfo 的可变指针
-    auto* info = response->mutable_stream();
+    auto *info = response->mutable_stream();
     info->set_stream_id(stream_id); // 建议把 ID 也填回去，方便客户端校验
 
-    if (task) 
+    if (task)
     {
         // 填充基本信息
         info->set_status(static_cast<streamingservice::StreamStatus>(task->getStatus()));
@@ -318,18 +318,28 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
         info->set_height(task->getHeight());
         info->set_decode_interval_ms(task->getDecodeIntervalMs());
         info->set_only_key_frames(task->onlyKeyFrames());
-        info->set_use_shared_mem(task->usesSharedMemory()); 
+        info->set_use_shared_mem(task->usesSharedMemory());
         info->set_heartbeat_timeout_ms(task->getHeartbeatTimeMs());
         info->set_keep_on_failure(task->shouldKeepOnFailure());
 
-        switch (task->getStatus()) {
-            case StreamStatus::CONNECTED:    response->set_message("已连接"); break;
-            case StreamStatus::CONNECTING:   response->set_message("连接中"); break;
-            case StreamStatus::DISCONNECTED: response->set_message("无法连接"); break;
-            default:                         response->set_message("未知状态"); break;
+        switch (task->getStatus())
+        {
+        case StreamStatus::CONNECTED:
+            response->set_message("已连接");
+            break;
+        case StreamStatus::CONNECTING:
+            response->set_message("连接中");
+            break;
+        case StreamStatus::DISCONNECTED:
+            response->set_message("无法连接");
+            break;
+        default:
+            response->set_message("未知状态");
+            break;
         }
     }
-    else {
+    else
+    {
         info->set_status(streamingservice::STATUS_NOT_FOUND);
         response->set_message("流不存在");
     }
@@ -338,7 +348,7 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
 
 grpc::Status RTSPServiceImpl::ListStreams(grpc::ServerContext *context, const streamingservice::ListStreamsRequest *request, streamingservice::ListStreamsResponse *response)
 {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::shared_lock<std::shared_mutex> lock(map_mutex_);
     response->set_total_count(static_cast<int>(streams_.size()));
 
     for (const auto &pair : streams_)
@@ -355,7 +365,7 @@ grpc::Status RTSPServiceImpl::ListStreams(grpc::ServerContext *context, const st
         stream_info->set_height(task->getHeight());
         stream_info->set_decode_interval_ms(task->getDecodeIntervalMs());
         stream_info->set_only_key_frames(task->onlyKeyFrames());
-        stream_info->set_use_shared_mem(task->usesSharedMemory()); 
+        stream_info->set_use_shared_mem(task->usesSharedMemory());
         stream_info->set_heartbeat_timeout_ms(task->getHeartbeatTimeMs());
         stream_info->set_keep_on_failure(task->shouldKeepOnFailure());
     }
@@ -371,7 +381,7 @@ void RTSPServiceImpl::cleanupLoop()
         std::vector<std::shared_ptr<StreamTask>> tasks_to_stop;
 
         {
-            std::lock_guard<std::mutex> lock(map_mutex_);
+            std::lock_guard<std::shared_mutex> lock(map_mutex_);
             // spdlog::info("Current active streams: {}", streams_.size());
             for (auto it = streams_.begin(); it != streams_.end();)
             {
@@ -416,9 +426,8 @@ void RTSPServiceImpl::cleanupLoop()
     }
 }
 
-
-grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context, 
-                                           const streamingservice::UpdateStreamRequest *request, 
+grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
+                                           const streamingservice::UpdateStreamRequest *request,
                                            streamingservice::UpdateStreamResponse *response)
 {
     std::string stream_id = request->stream_id();
@@ -426,11 +435,12 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
     std::shared_ptr<StreamTask> task;
 
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        
+        std::lock_guard<std::shared_mutex> lock(map_mutex_);
+
         // 1. 找到对应的 Task
         auto it = streams_.find(stream_id);
-        if (it == streams_.end()) {
+        if (it == streams_.end())
+        {
             response->set_success(false);
             response->set_message("Stream ID not found");
             return grpc::Status::OK;
@@ -439,7 +449,8 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
 
         // 2. 检查新 URL 是否已被其他 Task 占用 (防止重复)
         auto url_it = url_to_id_.find(new_url);
-        if (url_it != url_to_id_.end() && url_it->second != stream_id) {
+        if (url_it != url_to_id_.end() && url_it->second != stream_id)
+        {
             response->set_success(false);
             response->set_message("New URL already in use by another task");
             return grpc::Status::OK;
@@ -447,8 +458,9 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
 
         // 3. 重要：同步更新索引 Map
         std::string old_url = task->getUrl();
-        if (old_url != new_url) {
-            url_to_id_.erase(old_url);      // 删掉旧索引
+        if (old_url != new_url)
+        {
+            url_to_id_.erase(old_url);       // 删掉旧索引
             url_to_id_[new_url] = stream_id; // 建立新索引
             spdlog::info("[MAP UPDATE] Swapped URL index for ID: {}", stream_id);
         }

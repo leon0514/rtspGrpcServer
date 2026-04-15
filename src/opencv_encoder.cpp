@@ -3,12 +3,15 @@
 
 OpencvEncoder::OpencvEncoder(int quality) : quality_(quality) {}
 
-bool OpencvEncoder::encode(const cv::Mat& frame, std::string& out_buffer) {
-    if (frame.empty()) return false;
+bool OpencvEncoder::encode(const cv::Mat &frame, std::string &out_buffer)
+{
+    if (frame.empty() || frame.cols <= 0 || frame.rows <= 0)
+        return false;
     std::vector<uchar> buf;
     std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, quality_};
-    
-    if (cv::imencode(".jpg", frame, buf, params)) {
+
+    if (cv::imencode(".jpg", frame, buf, params))
+    {
         out_buffer.assign(buf.begin(), buf.end());
         return true;
     }

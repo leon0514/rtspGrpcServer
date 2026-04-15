@@ -8,8 +8,6 @@
 bool CpuDecoder::open(const std::string &url)
 {
     last_url_ = url;
-    // CPU 解码通常不需要像 GPU 那样预热太多帧，跳过前几帧避免花屏即可
-    frames_to_skip_ = 5;
 
     const int MAX_ATTEMPTS = 3;
 
@@ -100,7 +98,7 @@ bool CpuDecoder::grab()
         // 1. 优先尝试从解码器内部缓存区拉取已解码的帧（因为1个Packet可能解出多个Frame，或者B帧导致延迟）
         if (decoder_->receive_frame(&current_frame_))
         {
-            frame_ready_ = true;
+            frame_ready_.store(true, std::memory_order_release);
             return true; // 成功拿到一帧，退出 grab
         }
 
@@ -124,12 +122,11 @@ bool CpuDecoder::grab()
 
 bool CpuDecoder::retrieve(cv::Mat &frame, bool need_data)
 {
-    if (!isOpened() || !frame_ready_)
+    if (!isOpened() || !frame_ready_.load(std::memory_order_acquire))
         return false;
 
     // 消费掉这一帧，标记为未准备，等待下一次 grab
-    frame_ready_ = false;
-
+    frame_ready_.store(false, std::memory_order_release);
     // 处理跳帧逻辑（预热防花屏）
     if (frames_to_skip_ > 0)
     {
@@ -154,7 +151,8 @@ bool CpuDecoder::retrieve(cv::Mat &frame, bool need_data)
         int bgr_linesize = width * 3;
 
         // 利用 FFmpegDecoder 内部的 sws_scale 将 YUV 转为 BGR 写进 cv::Mat 的内存中
-        if (!decoder_->convert_to_bgr(current_frame_, frame.data, bgr_linesize))
+        bool convert_ok = decoder_->convert_to_bgr(current_frame_, frame.data, bgr_linesize);
+        if (!convert_ok)
         {
             spdlog::error("Failed to convert frame to BGR");
             return false;
@@ -177,7 +175,7 @@ int CpuDecoder::getHeight() const
 void CpuDecoder::release()
 {
     is_opened_ = false;
-    frame_ready_ = false;
+    frame_ready_.store(false, std::memory_order_release);
     current_frame_ = nullptr;
     if (decoder_)
     {

@@ -380,9 +380,8 @@ namespace FFHDDecoder
             CUresult result = cuvidGetDecodeStatus(m_hDecoder, pDispInfo->picture_index, &DecodeStatus);
             if (result == CUDA_SUCCESS && (DecodeStatus.decodeStatus == cuvidDecodeStatus_Error || DecodeStatus.decodeStatus == cuvidDecodeStatus_Error_Concealed))
             {
-                printf("Decode Error occurred for picture %d\n", m_nPicNumInDecodeOrder[pDispInfo->picture_index]);
                 checkCudaDriver(cuvidUnmapVideoFrame(m_hDecoder, dpSrcFrame));
-                return 0; 
+                return 0;
             }
 
             uint8_t *pDecodedFrame = nullptr;

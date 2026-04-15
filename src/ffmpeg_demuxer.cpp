@@ -68,7 +68,7 @@ namespace FFHDDemuxer
             this->uri_opened_ = uri;
             this->time_scale_opened_ = timescale;
             this->auto_reboot_ = auto_reboot;
-            this->only_key_frames_ = only_key_frames;   
+            this->only_key_frames_ = only_key_frames;
             return this->open(this->CreateFormatContext(uri), timescale);
         }
 
@@ -145,7 +145,6 @@ namespace FFHDDemuxer
         int get_bit_depth() override { return m_nBitDepth; }
         int get_frame_size() { return m_nWidth * (m_nHeight + m_nChromaHeight) * m_nBPP; }
 
-
         void get_extra_data(uint8_t **ppData, int *bytes) override
         {
             if (m_fmtc && m_iVideoStream >= 0)
@@ -209,7 +208,7 @@ namespace FFHDDemuxer
                     }
                     if (this->only_key_frames_ && !(m_pkt->flags & AV_PKT_FLAG_KEY))
                     {
-                        continue; 
+                        continue;
                     }
                 }
                 else
@@ -438,14 +437,13 @@ namespace FFHDDemuxer
 
                 // 【权衡后的探测参数】
                 // 1MB - 2MB 是高清 HEVC 的安全线，足以容纳一个最大关键帧，又不会导致退流时残留太多
-                av_dict_set(&options, "probesize", "2048000", 0);       
+                av_dict_set(&options, "probesize", "2048000", 0);
                 av_dict_set(&options, "analyzeduration", "2000000", 0); // 最多探测 2 秒
                 // 减少分析过程中的多余丢包等待
                 av_dict_set(&options, "flags", "low_delay", 0);
                 // 如果你只需要视频不要音频，直接告诉 FFmpeg 别去花时间找音频流了
                 av_dict_set(&options, "allowed_media_types", "video", 0);
             }
-
 
             AVFormatContext *ctx = nullptr;
             int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, &options);

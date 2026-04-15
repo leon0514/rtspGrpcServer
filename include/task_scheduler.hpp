@@ -15,9 +15,6 @@ public:
         return instance;
     }
 
-    // IO 线程池
-    ThreadPool &getIOPool() { return *io_pool_; }
-
     // 【修改点】获取特定 GPU 的线程池 (懒加载模式)
     ThreadPool &getComputePool(int gpu_id = -1)
     {
@@ -48,10 +45,9 @@ public:
         return *gpu_compute_pools_[gpu_id];
     }
 
-    // 初始化：不再直接创建 GPU 线程池，只是预留位置
-    void init(size_t io_threads, size_t compute_threads_per_gpu, size_t cpu_compute_threads)
+    // 初始化：不再创建全局 IO 线程池，只有计算线程池
+    void init(size_t compute_threads_per_gpu, size_t cpu_compute_threads)
     {
-        io_pool_ = std::make_unique<ThreadPool>(io_threads);
         cpu_compute_pool_ = std::make_unique<ThreadPool>(cpu_compute_threads);
 
         threads_per_gpu_ = compute_threads_per_gpu; // 记下来，以后用
@@ -70,7 +66,6 @@ public:
 private:
     TaskScheduler() = default;
 
-    std::unique_ptr<ThreadPool> io_pool_;
     std::unique_ptr<ThreadPool> cpu_compute_pool_;
 
     // 改为 vector 存放 unique_ptr，初始为空

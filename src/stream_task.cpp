@@ -1,6 +1,5 @@
 #include "stream_task.hpp"
 #include "task_scheduler.hpp"
-#include "timer_scheduler.hpp"
 #include <chrono>
 #include <thread>
 #include <spdlog/spdlog.h>
@@ -32,11 +31,15 @@ StreamTask::StreamTask(const std::string &url,
     updateHeartbeat();
     last_encode_time_ = std::chrono::steady_clock::now();
 
-    if (use_shared_mem_) {
-        try {
+    if (use_shared_mem_)
+    {
+        try
+        {
             shm_channel_ = std::make_unique<ZeroCopyChannel>(stream_id_, 0); // 生产者角色
             spdlog::info("SharedMemory enabled for stream: {}", stream_id_);
-        } catch (const std::exception& e) {
+        }
+        catch (const std::exception &e)
+        {
             spdlog::error("Failed to init SHM: {}", e.what());
             use_shared_mem_ = false;
         }
@@ -49,7 +52,7 @@ StreamTask::~StreamTask()
     stop();
     // 清理最新的引用，引用计数减一，可能触发内存归还或释放
     {
-        std::lock_guard<std::mutex> frame_lock(frame_mutex_);
+        std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
         latest_encoded_frame_.reset();
     }
 }
@@ -64,9 +67,36 @@ bool StreamTask::interruptibleSleep(int ms)
 
     std::unique_lock<std::mutex> lock(sleep_mutex_);
     bool stopped = sleep_cv_.wait_for(lock, std::chrono::milliseconds(ms), [this]()
-                                      { return !running_.load(); });
+                                      { return !running_.load() || io_wakeup_; });
 
     return !stopped;
+}
+
+void StreamTask::ioLoop()
+{
+    while (running_)
+    {
+        stepIO();
+        if (!running_)
+            break;
+
+        int delay_ms = 0;
+        {
+            std::lock_guard<std::mutex> lock(io_mutex_);
+            delay_ms = next_io_delay_ms_;
+            next_io_delay_ms_ = 0;
+            io_wakeup_ = false;
+        }
+
+        if (delay_ms == 0)
+            delay_ms = 1; // 避免立即循环导致死锁
+
+        if (delay_ms > 0)
+        {
+            if (!interruptibleSleep(delay_ms))
+                break;
+        }
+    }
 }
 
 void StreamTask::start()
@@ -81,9 +111,12 @@ void StreamTask::start()
     spdlog::info("StreamTask started: {}", url_);
 
     std::weak_ptr<StreamTask> weak_self = shared_from_this();
-    TaskScheduler::instance().getIOPool().enqueue(
-        [weak_self]()
-        { if (auto self = weak_self.lock()) {self->stepIO();} });
+    io_thread_ = std::thread([weak_self]()
+                             {
+        if (auto self = weak_self.lock())
+        {
+            self->ioLoop();
+        } });
 }
 
 void StreamTask::stop()
@@ -104,7 +137,7 @@ void StreamTask::stop()
 
     std::shared_ptr<std::string> old_frame_to_release;
     {
-        std::lock_guard<std::mutex> frame_lock(frame_mutex_);
+        std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
         old_frame_to_release = std::move(latest_encoded_frame_); // 此时 latest_encoded_frame_ 变为空
         frame_cv_.notify_all();
     }
@@ -124,7 +157,14 @@ void StreamTask::stop()
         shm_channel_.reset(); // 安全重置
     }
 
-    // 6. 状态重置
+    // 6. 等待专用 IO 线程退出
+    if (io_thread_.joinable() && io_thread_.get_id() != std::this_thread::get_id())
+    {
+        sleep_cv_.notify_all();
+        io_thread_.join();
+    }
+
+    // 7. 状态重置
     status_ = StreamStatus::DISCONNECTED;
     connected_ = false;
 }
@@ -134,30 +174,13 @@ void StreamTask::scheduleNext(int force_delay_ms)
     if (!running_)
         return;
 
-    std::weak_ptr<StreamTask> weak_self = shared_from_this();
+    {
+        std::lock_guard<std::mutex> lock(io_mutex_);
+        next_io_delay_ms_ = force_delay_ms;
+        io_wakeup_ = true;
+    }
 
-    if (force_delay_ms > 0)
-    {
-        TimerScheduler::instance().schedule(force_delay_ms, [weak_self]()
-                                            {
-            if (auto locked_self = weak_self.lock()) {  
-                if (locked_self->running_) {
-                    TaskScheduler::instance().getIOPool().enqueue([weak_self]() {
-                        if (auto still_alive = weak_self.lock()) {
-                            still_alive->stepIO();
-                        }
-                    });
-                }
-            } });
-    }
-    else
-    {
-        TaskScheduler::instance().getIOPool().enqueue([weak_self]()
-                                                      {
-            if (auto still_alive = weak_self.lock()) {
-                if (still_alive->running_) still_alive->stepIO();
-            } });
-    }
+    sleep_cv_.notify_all();
 }
 
 void StreamTask::stepIO()
@@ -167,18 +190,19 @@ void StreamTask::stepIO()
 
     std::unique_lock<std::mutex> lock(decoder_mutex_);
 
-    if (url_changed_) {
+    if (url_changed_)
+    {
         spdlog::info("IO Thread: Switching to new URL: {}", pending_url_);
         url_ = pending_url_;
         url_changed_ = false;
-        if (decoder_) {
+        if (decoder_)
+        {
             decoder_->release(); // 在 IO 线程释放，不卡 gRPC 线程
         }
     }
 
     if (!decoder_)
         return;
-    
 
     // 1. 处理连接断开重连逻辑
     if (!decoder_->isOpened())
@@ -220,6 +244,7 @@ void StreamTask::stepIO()
     }
 
     // 2. 抓取网络包 (grab 本身是阻塞的，由摄像头帧率控制节奏)
+    auto grab_start = std::chrono::steady_clock::now();
     if (!decoder_->grab())
     {
         spdlog::warn("Frame grab failed: {}", url_);
@@ -231,9 +256,11 @@ void StreamTask::stepIO()
         scheduleNext(50);
         return;
     }
+    auto grab_end = std::chrono::steady_clock::now();
 
     connected_ = true;
     reconnect_attempts_ = 0;
+    last_grab_end_ = grab_end;
 
     // 3. 抽帧逻辑判断 (Frame dropping)
     bool should_process = true;
@@ -278,9 +305,11 @@ void StreamTask::stepIO()
 
 void StreamTask::stepCompute()
 {
+    auto compute_start = std::chrono::steady_clock::now();
+    auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_start - last_grab_end_).count();
+
     if (!running_)
         return;
-
     if (gpu_id_ >= 0)
     {
         CUDATools::AutoDevice auto_device_exchange(gpu_id_);
@@ -290,8 +319,7 @@ void StreamTask::stepCompute()
     {
         keepAlive();
         // 继续执行编码和通知订阅者，但不使用共享内存
-    }   
-
+    }
     std::unique_lock<std::mutex> lock(decoder_mutex_);
     if (!decoder_ || !decoder_->isOpened())
     {
@@ -331,22 +359,22 @@ void StreamTask::stepCompute()
     // 通知订阅者
     if (encode_ok)
     {
-        if (use_shared_mem_ && shm_channel_) 
+        if (use_shared_mem_ && shm_channel_)
         {
             auto now = std::chrono::steady_clock::now();
             uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      now.time_since_epoch()).count();
+                              now.time_since_epoch())
+                              .count();
             uint32_t width = decoder_->getWidth();
             uint32_t height = decoder_->getHeight();
-            // spdlog::info("Writing frame to SHM: size={} bytes, resolution={}x{}, timestamp={}", 
+            // spdlog::info("Writing frame to SHM: size={} bytes, resolution={}x{}, timestamp={}",
             //              encode_buffer->size(), width, height, ts);
-            shm_channel_->write_frame(reinterpret_cast<const uint8_t*>(encode_buffer->data()), 
+            shm_channel_->write_frame(reinterpret_cast<const uint8_t *>(encode_buffer->data()),
                                       encode_buffer->size(), width, height, ts);
         }
-
         std::shared_ptr<std::string> prev_frame;
         {
-            std::lock_guard<std::mutex> frame_lock(frame_mutex_);
+            std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
             prev_frame = std::move(latest_encoded_frame_); // 把旧的移出去
             latest_encoded_frame_ = encode_buffer;         // 放新的进去
             last_encode_time_ = std::chrono::steady_clock::now();
@@ -369,7 +397,7 @@ void StreamTask::updateHeartbeat()
 bool StreamTask::getLatestEncodedFrame(std::shared_ptr<std::string> &out_buffer)
 {
     updateHeartbeat();
-    std::lock_guard<std::mutex> lock(frame_mutex_);
+    std::shared_lock<std::shared_mutex> lock(frame_mutex_);
 
     if (!latest_encoded_frame_)
     {
@@ -382,24 +410,24 @@ bool StreamTask::getLatestEncodedFrame(std::shared_ptr<std::string> &out_buffer)
 bool StreamTask::waitForNextFrame(std::shared_ptr<std::string> &out_buffer, uint64_t &current_seq, int timeout_ms)
 {
     updateHeartbeat();
-    std::unique_lock<std::mutex> lock(frame_mutex_);
+    std::unique_lock<std::shared_mutex> lock(frame_mutex_);
 
-    if (frame_seq_.load(std::memory_order_acquire) > current_seq) {
-        out_buffer = latest_encoded_frame_;
-        current_seq = frame_seq_.load();
-        return true;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (running_.load() && frame_seq_.load(std::memory_order_acquire) <= current_seq)
+    {
+        if (frame_cv_.wait_until(lock, deadline) == std::cv_status::timeout)
+        {
+            break;
+        }
     }
 
-    // 使用 wait_for 等待新序列号
-    bool signaled = frame_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this, current_seq]() {
-        return frame_seq_.load(std::memory_order_acquire) > current_seq || !running_.load();
-    });
+    if (!running_.load() || !latest_encoded_frame_)
+        return false;
 
-    if (!running_.load() || !latest_encoded_frame_) return false;
-
-    if (signaled && frame_seq_.load() > current_seq) {
+    if (frame_seq_.load(std::memory_order_acquire) > current_seq)
+    {
         out_buffer = latest_encoded_frame_;
-        current_seq = frame_seq_.load();
+        current_seq = frame_seq_.load(std::memory_order_acquire);
         return true;
     }
     return false;
@@ -428,11 +456,12 @@ bool StreamTask::isTimeout()
     return duration_ms > heartbeat_timeout_ms_;
 }
 
-
-void StreamTask::updateUrl(const std::string& new_url) {
+void StreamTask::updateUrl(const std::string &new_url)
+{
     // 这里只设置 pending 状态，不执行耗时的 release
     std::lock_guard<std::mutex> lock(decoder_mutex_);
-    if (url_ != new_url) {
+    if (url_ != new_url)
+    {
         pending_url_ = new_url;
         url_changed_ = true; // 原子标记 URL 已经改变，等待 stepIO() 循环自然处理
         spdlog::info("StreamTask URL updated: {} -> {}", url_, new_url);
