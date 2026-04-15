@@ -15,6 +15,8 @@ from remote_capture import (
 )
 
 import os
+import datetime
+import threading
 
 # default address can still be overridden via environment var
 SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50052")
@@ -53,7 +55,7 @@ def example_poll_frame():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=False)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=True)
         if not stream_id:
             return
         
@@ -91,7 +93,7 @@ def example_poll_frame():
         print("流已停止")
 
 
-def example_stream_frames():
+def example_stream_frames(rtsp_url):
     """示例3: 流式传输获取帧"""
     print("=" * 50)
     print("示例3: 流式传输获取帧")
@@ -99,7 +101,7 @@ def example_stream_frames():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=-1, only_key_frames=True)
+        stream_id = client.start_stream(rtsp_url, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=False)
         # stream_id = "50fdcc9dd42e15f7"
         if not stream_id:
             return
@@ -120,10 +122,11 @@ def example_stream_frames():
 
         start = time.time()
         
-        for seq, frame in client.stream_frames(stream_id, max_fps=10):
+        for seq, frame in client.stream_frames(stream_id, max_fps=25):
             if seq != -1:
                 print(f"接收帧: {seq}")
-                cv2.imwrite(f"images/capture_{seq}.jpg", frame)
+                time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                cv2.imwrite(f"images/{stream_id}_{time_stamp}.jpg", frame)
             else:
                 status = client.get_stream_status(stream_id)
                 if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
@@ -143,4 +146,30 @@ if __name__ == "__main__":
     
     example_list_streams()
     # example_poll_frame()
-    example_stream_frames()
+    rtsp_list = ["rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/201",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/301",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/401",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/501",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/601",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/701",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/801",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1001",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1101",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1201",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1401",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1501",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1601"]
+    # 使用线程来测试
+    threads = []
+
+    for rtsp_url in rtsp_list:
+        t = threading.Thread(target=example_stream_frames, args=(rtsp_url,))
+        t.start()
+        threads.append(t)
+    
+    # 等待所有线程完成
+    for t in threads:
+        t.join()
+    print("所有示例已完成")

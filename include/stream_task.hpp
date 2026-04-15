@@ -77,8 +77,8 @@ private:
 
     // 调度下一步操作
     void scheduleNext(int force_delay_ms = 0);
-
-    // 阶段1：IO操作 (Demux / Grab / Network Read) -> 运行在 IO线程池
+    
+    // IO 操作，每个流一个线程，负责 grab 和调度计算任务
     void stepIO();
     void ioLoop();
 

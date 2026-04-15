@@ -9,7 +9,7 @@
 bool CudaDecoder::open(const std::string &url)
 {
     last_url_ = url;      // 保存 URL 供后续重连使用
-    frames_to_skip_ = 50; // GPU 解码器需要更多帧来预热和稳定 BGR 转换
+    frames_to_skip_ = 0; // GPU 解码器需要更多帧来预热和稳定 BGR 转换
 
     const int MAX_ATTEMPTS = 3;
 

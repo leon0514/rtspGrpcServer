@@ -66,10 +66,10 @@ bool StreamTask::interruptibleSleep(int ms)
         return true;
 
     std::unique_lock<std::mutex> lock(sleep_mutex_);
-    bool stopped = sleep_cv_.wait_for(lock, std::chrono::milliseconds(ms), [this]()
-                                      { return !running_.load() || io_wakeup_; });
+    sleep_cv_.wait_for(lock, std::chrono::milliseconds(ms), [this]()
+                      { return !running_.load() || io_wakeup_; });
 
-    return !stopped;
+    return running_.load();
 }
 
 void StreamTask::ioLoop()
@@ -88,14 +88,11 @@ void StreamTask::ioLoop()
             io_wakeup_ = false;
         }
 
-        if (delay_ms == 0)
-            delay_ms = 1; // 避免立即循环导致死锁
+        if (delay_ms <= 0)
+            delay_ms = 1; // 避免 busy loop
 
-        if (delay_ms > 0)
-        {
-            if (!interruptibleSleep(delay_ms))
-                break;
-        }
+        if (!interruptibleSleep(delay_ms))
+            break;
     }
 }
 
@@ -111,12 +108,12 @@ void StreamTask::start()
     spdlog::info("StreamTask started: {}", url_);
 
     std::weak_ptr<StreamTask> weak_self = shared_from_this();
-    io_thread_ = std::thread([weak_self]()
-                             {
+    io_thread_ = std::thread([weak_self](){
         if (auto self = weak_self.lock())
         {
             self->ioLoop();
-        } });
+        } }
+    );
 }
 
 void StreamTask::stop()
@@ -299,7 +296,7 @@ void StreamTask::stepIO()
         lock.unlock();
         // 丢弃完毕，立即准备抓取下一帧。
         // 因为 grab() 是网络阻塞的，所以传 0 也不会导致 CPU 100% 空转。
-        scheduleNext(0);
+        scheduleNext(1);
     }
 }
 

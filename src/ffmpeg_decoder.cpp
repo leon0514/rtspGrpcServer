@@ -105,14 +105,28 @@ namespace FFHDDecoder
                 return checkFFMPEG(avcodec_send_packet(m_ctx, nullptr));
             }
 
-            AVPacket packet;
-            av_init_packet(&packet);
-            packet.data = const_cast<uint8_t *>(pData);
-            packet.size = nSize;
-            packet.pts = pts;
+            av_packet_unref(m_packet);
+            m_packet->data = const_cast<uint8_t *>(pData);
+            m_packet->size = nSize;
+            m_packet->pts = pts;
 
-            int ret = avcodec_send_packet(m_ctx, &packet);
-            return checkFFMPEG(ret);
+            int ret = avcodec_send_packet(m_ctx, m_packet);
+            if (ret < 0)
+            {
+                if (ret == AVERROR(EINVAL) || ret == AVERROR_INVALIDDATA)
+                {
+                    std::cout << "FFMPEGDecoder warning: invalid packet skipped\n";
+                    return false;
+                }
+                if (ret == AVERROR(EAGAIN))
+                {
+                    // 内部缓冲区已满，需要先 drain 输出帧，当前包稍后再尝试
+                    return false;
+                }
+                return checkFFMPEG(ret);
+            }
+
+            return true;
         }
 
         bool receive_frame(AVFrame **pOutFrame) override

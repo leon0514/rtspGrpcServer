@@ -132,6 +132,8 @@ class RemoteCapture:
         
         try:
             print(f"正在启动流: {rtsp_url} (解码器: {DECODER_NAMES.get(decoder_type, 'Unknown')}, GPU ID: {gpu_id}), Only Key Frames: {'Yes' if only_key_frames else 'No'}")
+            if decoder_type != DECODER_GPU_NVCUVID:
+                gpu_id = -1  # CPU 解码不使用 GPU ID
             req = stream_service_pb2.StartRequest(
                 rtsp_url=rtsp_url,
                 heartbeat_timeout_ms=heartbeat_timeout_ms,

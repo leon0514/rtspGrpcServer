@@ -113,8 +113,12 @@ bool CpuDecoder::grab()
         }
 
         // 3. 将新读取的 Packet 送入解码器
-        // 送入后进入下一轮循环，再次触发 receive_frame
-        decoder_->send_packet(packet_data, packet_size, last_pts_);
+        // 送入失败时跳过当前包，继续读取下一个包
+        if (!decoder_->send_packet(packet_data, packet_size, last_pts_))
+        {
+            spdlog::warn("Invalid or non-decodable packet skipped for stream {}", last_url_);
+            continue;
+        }
     }
 
     return true;
@@ -122,6 +126,7 @@ bool CpuDecoder::grab()
 
 bool CpuDecoder::retrieve(cv::Mat &frame, bool need_data)
 {
+    frames_to_skip_ = 0;
     if (!isOpened() || !frame_ready_.load(std::memory_order_acquire))
         return false;
 
@@ -158,7 +163,6 @@ bool CpuDecoder::retrieve(cv::Mat &frame, bool need_data)
             return false;
         }
     }
-
     return true;
 }
 
