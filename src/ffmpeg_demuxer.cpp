@@ -13,6 +13,7 @@ extern "C"
 #include <libavformat/avformat.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
+#include <libavutil/log.h>
 };
 
 using namespace std;
@@ -48,6 +49,7 @@ namespace FFHDDemuxer
         FFmpegDemuxerImpl()
         {
             // avformat_network_init();
+            av_log_set_level(AV_LOG_FATAL);
             m_pkt = av_packet_alloc();
             m_pktFiltered = av_packet_alloc();
         }
