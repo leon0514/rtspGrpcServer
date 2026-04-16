@@ -45,7 +45,7 @@ namespace FFHDDecoder
     /* max_cache 取 -1 时，无限缓存，根据实际情况缓存。实际上一般不超过5帧 */
     // gpu_id = -1, current_device_id
     std::shared_ptr<CUVIDDecoder> create_cuvid_decoder(
-        bool use_device_frame, IcudaVideoCodec codec, int max_cache = -1, int gpu_id = -1,
+        bool use_device_frame, IcudaVideoCodec codec, bool bLowLatency = false, int max_cache = -1, int gpu_id = -1,
         const CropRect *crop_rect = nullptr, const ResizeDim *resize_dim = nullptr, bool output_bgr = false);
 }; // FFHDDecoder
 

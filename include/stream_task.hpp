@@ -33,7 +33,8 @@ public:
                bool keep_on_failure,
                bool use_shared_mem,
                std::unique_ptr<IVideoDecoder> decoder,
-               std::shared_ptr<IImageEncoder> encoder);
+               bool use_gpu_encoder,
+               int jpeg_quality);
 
     ~StreamTask();
 
@@ -101,7 +102,8 @@ private:
     int gpu_id_ = -1;
 
     std::unique_ptr<IVideoDecoder> decoder_;
-    std::shared_ptr<IImageEncoder> encoder_;
+    bool use_gpu_encoder_ = false;
+    int jpeg_quality_ = 85;
 
     std::unique_ptr<ZeroCopyChannel> shm_channel_;
 

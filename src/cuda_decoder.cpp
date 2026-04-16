@@ -19,6 +19,7 @@ bool CudaDecoder::open(const std::string &url)
         release();
 
         // 1. 创建解封装器
+        bool low_latency = this->onlyKeyFrames(); // 如果只处理关键帧，可以启用低延迟模式
         demuxer_ = FFHDDemuxer::create_ffmpeg_demuxer(url, false, this->only_key_frames_);
         if (!demuxer_)
         {
@@ -33,6 +34,7 @@ bool CudaDecoder::open(const std::string &url)
             decoder_ = FFHDDecoder::create_cuvid_decoder(
                 true, // bUseDeviceFrame = true
                 FFHDDecoder::ffmpeg2NvCodecId(demuxer_->get_video_codec()),
+                low_latency,
                 5,       // max_cache
                 gpu_id_, // gpu_id
                 nullptr,

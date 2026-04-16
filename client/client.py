@@ -101,10 +101,13 @@ def example_stream_frames(rtsp_url):
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(rtsp_url, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=False)
+        stream_id = client.start_stream(rtsp_url, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=True)
         # stream_id = "50fdcc9dd42e15f7"
         if not stream_id:
             return
+        
+        if not os.path.exists(f"images/{stream_id}"):
+            os.mkdir(f"images/{stream_id}")
         
         status = STATUS_CONNECTING
         while status == STATUS_CONNECTING:
@@ -126,7 +129,7 @@ def example_stream_frames(rtsp_url):
             if seq != -1:
                 print(f"接收帧: {seq}")
                 time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                cv2.imwrite(f"images/{stream_id}_{time_stamp}.jpg", frame)
+                cv2.imwrite(f"images/{stream_id}/{time_stamp}.jpg", frame)
             else:
                 status = client.get_stream_status(stream_id)
                 if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):

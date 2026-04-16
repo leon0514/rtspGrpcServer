@@ -1,9 +1,47 @@
 #include "stream_task.hpp"
 #include "task_scheduler.hpp"
+#include "nvjpeg_encoder.hpp"
+#include "opencv_encoder.hpp"
 #include <chrono>
 #include <thread>
 #include <spdlog/spdlog.h>
 #include "cuda_tools.hpp"
+#include <unordered_map>
+
+namespace {
+    using EncoderPtr = std::shared_ptr<IImageEncoder>;
+
+    static size_t makeEncoderKey(bool use_gpu_encoder, int gpu_id, int quality)
+    {
+        uint64_t key = use_gpu_encoder ? (1ULL << 63) : 0ULL;
+        key |= (static_cast<uint64_t>(static_cast<uint32_t>(gpu_id)) << 32);
+        key |= static_cast<uint64_t>(static_cast<uint32_t>(quality));
+        return static_cast<size_t>(key);
+    }
+
+    static EncoderPtr getThreadLocalEncoder(bool use_gpu_encoder, int gpu_id, int quality)
+    {
+        static thread_local std::unordered_map<size_t, EncoderPtr> encoders;
+        size_t key = makeEncoderKey(use_gpu_encoder, gpu_id, quality);
+        auto it = encoders.find(key);
+        if (it != encoders.end())
+        {
+            return it->second;
+        }
+
+        EncoderPtr encoder;
+        if (use_gpu_encoder)
+        {
+            encoder = std::make_shared<NvjpegEncoder>(quality, gpu_id);
+        }
+        else
+        {
+            encoder = std::make_shared<OpencvEncoder>(quality);
+        }
+        encoders.emplace(key, encoder);
+        return encoder;
+    }
+}
 
 StreamTask::StreamTask(const std::string &url,
                        const std::string &stream_id,
@@ -14,7 +52,8 @@ StreamTask::StreamTask(const std::string &url,
                        bool keep_on_failure,
                        bool use_shared_mem,
                        std::unique_ptr<IVideoDecoder> decoder,
-                       std::shared_ptr<IImageEncoder> encoder)
+                       bool use_gpu_encoder,
+                       int jpeg_quality)
     : url_(url),
       stream_id_(stream_id),
       heartbeat_timeout_ms_(heartbeat_timeout_ms),
@@ -24,7 +63,8 @@ StreamTask::StreamTask(const std::string &url,
       keep_on_failure_(keep_on_failure),
       use_shared_mem_(use_shared_mem),
       decoder_(std::move(decoder)),
-      encoder_(std::move(encoder))
+      use_gpu_encoder_(use_gpu_encoder),
+      jpeg_quality_(jpeg_quality)
 {
     // 初始化内存池
     frame_pool_ = std::make_shared<FrameMemoryPool>(3 * 1024 * 1024);
@@ -330,14 +370,15 @@ void StreamTask::stepCompute()
     bool encode_ok = false;
 
     // 真正的解码 (retrieve) 和 编码 (encode)
-    if (decoder_->isGpuFrame() && encoder_->supportsGpuEncode())
+    auto encoder = getThreadLocalEncoder(use_gpu_encoder_, gpu_id_, jpeg_quality_);
+    if (decoder_->isGpuFrame() && encoder->supportsGpuEncode())
     {
         if (decoder_->retrieve(reusable_frame_, true))
         {
             uint8_t *gpu_ptr = decoder_->getGpuFramePtr();
             if (gpu_ptr)
             {
-                encode_ok = encoder_->encodeGpu(
+                encode_ok = encoder->encodeGpu(
                     gpu_ptr, decoder_->getWidth(), decoder_->getHeight(), *encode_buffer);
             }
         }
@@ -346,7 +387,7 @@ void StreamTask::stepCompute()
     {
         if (decoder_->retrieve(reusable_frame_, true) && !reusable_frame_.empty())
         {
-            encode_ok = encoder_->encode(reusable_frame_, *encode_buffer);
+            encode_ok = encoder->encode(reusable_frame_, *encode_buffer);
         }
     }
 

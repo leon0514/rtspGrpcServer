@@ -627,12 +627,12 @@ namespace FFHDDecoder
     };
 
     std::shared_ptr<CUVIDDecoder> create_cuvid_decoder(
-        bool bUseDeviceFrame, IcudaVideoCodec eCodec, int max_cache, int gpu_id,
+        bool bUseDeviceFrame, IcudaVideoCodec eCodec, bool bLowLatency,int max_cache, int gpu_id,
         const CropRect *pCropRect, const ResizeDim *pResizeDim, bool output_bgr)
     {
 
         shared_ptr<CUVIDDecoderImpl> instance(new CUVIDDecoderImpl());
-        if (!instance->create(bUseDeviceFrame, gpu_id, (cudaVideoCodec)eCodec, false, pCropRect, pResizeDim, max_cache, 0, 0, 1000, output_bgr))
+        if (!instance->create(bUseDeviceFrame, gpu_id, (cudaVideoCodec)eCodec, bLowLatency, pCropRect, pResizeDim, max_cache, 0, 0, 1000, output_bgr))
             instance.reset();
         return instance;
     }

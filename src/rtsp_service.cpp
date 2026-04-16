@@ -83,18 +83,9 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         return grpc::Status::OK;
     }
 
-    std::shared_ptr<IImageEncoder> encoder;
     const int jpeg_quality = 85;
-    if (decoder_type == streamingservice::DECODER_GPU_NVCUVID)
-    {
-        encoder = std::make_shared<NvjpegEncoder>(jpeg_quality, gpu_id);
-        spdlog::info("Using NVJPEG GPU encoder");
-    }
-    else
-    {
-        encoder = std::make_shared<OpencvEncoder>(jpeg_quality);
-        spdlog::info("Using OpenCV CPU encoder");
-    }
+    bool use_gpu_encoder = (decoder_type == streamingservice::DECODER_GPU_NVCUVID);
+    spdlog::info("Using {} encoder", use_gpu_encoder ? "NVJPEG GPU" : "OpenCV CPU");
 
     std::string stream_id = generate_uuid();
     spdlog::info("Using Shared Memory: {}", request->use_shared_mem() ? "Enabled" : "Disabled");
@@ -108,7 +99,8 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         request->keep_on_failure(),
         request->use_shared_mem(),
         std::move(decoder),
-        encoder);
+        use_gpu_encoder,
+        jpeg_quality);
 
     // 双重检查锁定（Double-Checked Locking）
     {
