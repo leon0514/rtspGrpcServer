@@ -89,6 +89,17 @@ StreamTask::StreamTask(const std::string &url,
 StreamTask::~StreamTask()
 {
     spdlog::warn("==== ~StreamTask DESTROYED: {} ====", url_);
+    running_ = false;
+    
+    // 2. 必须强制 join，确保线程不再访问此对象的成员
+    if (io_thread_.joinable()) 
+    {
+        // 如果当前线程就是 io_thread_ 自己，这里会死锁，所以要判断
+        if (std::this_thread::get_id() != io_thread_.get_id()) 
+        {
+            io_thread_.join();
+        } 
+    }
     stop();
     // 清理最新的引用，引用计数减一，可能触发内存归还或释放
     {
@@ -163,6 +174,15 @@ void StreamTask::stop()
     {
         return;
     }
+    
+    if (io_thread_.joinable()) 
+    {
+        if (std::this_thread::get_id() != io_thread_.get_id()) 
+        {
+            sleep_cv_.notify_all();
+            io_thread_.join();
+        }
+    }
 
     spdlog::info("StreamTask stopping: {}", url_);
     stopped_ = true;
@@ -194,14 +214,7 @@ void StreamTask::stop()
         shm_channel_.reset(); // 安全重置
     }
 
-    // 6. 等待专用 IO 线程退出
-    if (io_thread_.joinable() && io_thread_.get_id() != std::this_thread::get_id())
-    {
-        sleep_cv_.notify_all();
-        io_thread_.join();
-    }
-
-    // 7. 状态重置
+    // 6. 状态重置
     status_ = StreamStatus::DISCONNECTED;
     connected_ = false;
 }
