@@ -134,6 +134,7 @@ grpc::Status RTSPServiceImpl::StopStream(grpc::ServerContext *context, const str
 {
     std::string stream_id = request->stream_id();
     std::shared_ptr<StreamTask> task_to_stop;
+    std::string url_to_remove;
 
     {
         std::lock_guard<std::shared_mutex> lock(map_mutex_);
@@ -141,7 +142,9 @@ grpc::Status RTSPServiceImpl::StopStream(grpc::ServerContext *context, const str
         if (it != streams_.end())
         {
             task_to_stop = it->second;
+            url_to_remove = task_to_stop->getUrl();
             streams_.erase(it);
+            url_to_id_.erase(url_to_remove);
         }
     }
 
