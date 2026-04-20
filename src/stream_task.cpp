@@ -368,7 +368,6 @@ void StreamTask::stepCompute()
     if (use_shared_mem_ && shm_channel_)
     {
         keepAlive();
-        // 继续执行编码和通知订阅者，但不使用共享内存
     }
     std::unique_lock<std::mutex> lock(decoder_mutex_);
     if (!decoder_ || !decoder_->isOpened())
@@ -377,65 +376,84 @@ void StreamTask::stepCompute()
         scheduleNext(0);
         return;
     }
-
-    // 从内存池获取 Buffer
-    auto encode_buffer = frame_pool_->acquire();
-    bool encode_ok = false;
-
-    // 真正的解码 (retrieve) 和 编码 (encode)
-    auto encoder = getThreadLocalEncoder(use_gpu_encoder_, gpu_id_, jpeg_quality_);
-    if (decoder_->isGpuFrame() && encoder->supportsGpuEncode())
+    printf("=== stepCompute start: %zu ms after grab ===\n", delay_ms);
+    printf("use shared_mem_ = %d\n", use_shared_mem_);
+    printf("shm_channel_ : %s\n", shm_channel_ ? "initialized" : "null");
+    bool frame_ready = false;
+    
+    // === 分支 1: 共享内存模式 -> 直接传原始 Mat ===
+    if (use_shared_mem_ && shm_channel_)
     {
-        if (decoder_->retrieve(reusable_frame_, true))
+        keepAlive();
+        printf("Attempting to retrieve frame for SHM...\n");
+        // 直接获取解码后的 Mat (GPU/CPU 自适应)
+        bool retrieved = decoder_->retrieve(reusable_frame_, true);
+        printf("Frame retrieve for SHM: %s, frame valid: %d\n", retrieved ? "success" : "failure", !reusable_frame_.empty());
+        if (retrieved && !reusable_frame_.empty())
         {
-            uint8_t *gpu_ptr = decoder_->getGpuFramePtr();
-            if (gpu_ptr)
+            printf("Frame retrieved for SHM: %dx%d@%dch, type=%d\n", 
+                   reusable_frame_.cols, reusable_frame_.rows, 
+                   reusable_frame_.channels(), reusable_frame_.type());
+            auto now = std::chrono::steady_clock::now();
+            uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              now.time_since_epoch()).count();
+            
+            // 写入共享内存（跳过编码！）
+            if (shm_channel_->write_frame_mat(reusable_frame_, ts))
             {
-                encode_ok = encoder->encodeGpu(
-                    gpu_ptr, decoder_->getWidth(), decoder_->getHeight(), *encode_buffer);
+                frame_ready = true;
+                // 可选：更新统计信息
+                spdlog::info("SHM frame written: {}x{}@{}ch, size={}B", 
+                              reusable_frame_.cols, reusable_frame_.rows,
+                              reusable_frame_.channels(), 
+                              reusable_frame_.total() * reusable_frame_.elemSize());
             }
         }
     }
+    // === 分支 2: 传统模式 -> 编码为 JPEG 字符串 ===
     else
     {
-        if (decoder_->retrieve(reusable_frame_, true) && !reusable_frame_.empty())
+        auto encode_buffer = frame_pool_->acquire();
+        auto encoder = getThreadLocalEncoder(use_gpu_encoder_, gpu_id_, jpeg_quality_);
+        
+        if (decoder_->isGpuFrame() && encoder->supportsGpuEncode())
         {
-            encode_ok = encoder->encode(reusable_frame_, *encode_buffer);
+            if (decoder_->retrieve(reusable_frame_, true))
+            {
+                uint8_t *gpu_ptr = decoder_->getGpuFramePtr();
+                if (gpu_ptr)
+                {
+                    frame_ready = encoder->encodeGpu(gpu_ptr, decoder_->getWidth(), 
+                                                     decoder_->getHeight(), *encode_buffer);
+                }
+            }
+        }
+        else
+        {
+            if (decoder_->retrieve(reusable_frame_, true) && !reusable_frame_.empty())
+            {
+                frame_ready = encoder->encode(reusable_frame_, *encode_buffer);
+            }
+        }
+        
+        // 编码成功后通知订阅者
+        if (frame_ready)
+        {
+            std::shared_ptr<std::string> prev_frame;
+            {
+                std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
+                prev_frame = std::move(latest_encoded_frame_);
+                latest_encoded_frame_ = encode_buffer;
+                last_encode_time_ = std::chrono::steady_clock::now();
+                frame_seq_.fetch_add(1, std::memory_order_release);
+            }
+            frame_cv_.notify_all();
         }
     }
-
-    // 计算完成，立即释放互斥锁
+    
     lock.unlock();
-
-    // 通知订阅者
-    if (encode_ok)
-    {
-        if (use_shared_mem_ && shm_channel_)
-        {
-            auto now = std::chrono::steady_clock::now();
-            uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              now.time_since_epoch())
-                              .count();
-            uint32_t width = decoder_->getWidth();
-            uint32_t height = decoder_->getHeight();
-            // spdlog::info("Writing frame to SHM: size={} bytes, resolution={}x{}, timestamp={}",
-            //              encode_buffer->size(), width, height, ts);
-            shm_channel_->write_frame(reinterpret_cast<const uint8_t *>(encode_buffer->data()),
-                                      encode_buffer->size(), width, height, ts);
-        }
-        std::shared_ptr<std::string> prev_frame;
-        {
-            std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
-            prev_frame = std::move(latest_encoded_frame_); // 把旧的移出去
-            latest_encoded_frame_ = encode_buffer;         // 放新的进去
-            last_encode_time_ = std::chrono::steady_clock::now();
-            frame_seq_.fetch_add(1, std::memory_order_release);
-        }
-        frame_cv_.notify_all();
-    }
-
-    // 移除硬编码的 interruptibleSleep(1)！
-    // 计算完成后，立即通知 IO 线程池去准备抓下一帧
+    
+    // 立即调度下一帧（避免硬编码 sleep）
     scheduleNext(0);
 }
 

@@ -9,15 +9,21 @@
 #include <sys/stat.h>
 #include <cstring>
 
-constexpr size_t MAX_SHM_FRAME_SIZE = 3 * 1024 * 1024; // 3MB
+constexpr size_t MAX_SHM_FRAME_SIZE = 6  * 2560 * 1440; // 3MB
 constexpr int SHM_SLOT_COUNT = 8;
 
 struct alignas(64) ShmMeta
 {
-    uint64_t actual_size;
-    uint64_t width;
-    uint64_t height;
-    uint64_t timestamp;
+    uint64_t actual_size;    // 实际数据字节数
+    uint64_t width;          // 图像宽度
+    uint64_t height;         // 图像高度
+    uint64_t timestamp;      // 时间戳 (ms)
+    
+    // 图像格式描述 ===
+    uint32_t channels;       // 通道数: 1=GRAY, 3=BGR, 4=BGRA
+    uint32_t depth;          // 位深: CV_8U=0, CV_16U=2, CV_32F=5 等
+    uint32_t step;           // 行字节数 (含 padding)，用于非连续内存 [[11]]
+    uint32_t reserved;       // 对齐填充
 };
 
 struct alignas(64) ShmFrameSlot
@@ -70,6 +76,59 @@ public:
             munmap(layout_, sizeof(ShmLayout));
         if (shm_fd_ >= 0)
             close(shm_fd_);
+    }
+
+    bool write_frame_mat(const cv::Mat& frame, uint64_t timestamp)
+    {
+        if (!layout_ || frame.empty())
+        {
+            printf("Invalid frame or uninitialized shared memory layout\n");
+            return false;
+        }
+            
+        
+        // 1. 确保数据连续（关键！）[[20]][[24]]
+        cv::Mat continuous_frame = frame;
+        if (!frame.isContinuous())
+        {
+            continuous_frame = frame.clone(); // 非连续时深拷贝一份
+        }
+        
+        // 2. 计算数据大小
+        const size_t data_size = continuous_frame.total() * continuous_frame.elemSize();
+        if (data_size > MAX_SHM_FRAME_SIZE)
+        {
+            printf("Frame size %zu exceeds maximum allowed %zu\n", data_size, MAX_SHM_FRAME_SIZE);
+            return false;
+        }
+        
+        // 3. 获取槽位
+        uint64_t count = write_count_++;
+        size_t idx = count % SHM_SLOT_COUNT;
+        ShmFrameSlot &slot = layout_->slots[idx];
+        
+        // 4. 标记开始写入 (sequence 奇数=写入中)
+        slot.sequence.fetch_add(1, std::memory_order_acquire);
+        
+        // 5. 写入元数据
+        slot.meta.actual_size = data_size;
+        slot.meta.width = frame.cols;
+        slot.meta.height = frame.rows;
+        slot.meta.timestamp = timestamp;
+        slot.meta.channels = frame.channels();
+        slot.meta.depth = frame.depth();      // OpenCV 内部 depth 枚举
+        slot.meta.step = static_cast<uint32_t>(continuous_frame.step[0]); // 行字节数 [[11]]
+        
+        // 6. 零拷贝式内存传输（仅一次 memcpy）
+        std::memcpy(slot.payload, continuous_frame.data, data_size);
+        
+        // 7. 标记写入完成 (sequence 偶数=就绪)
+        slot.sequence.fetch_add(1, std::memory_order_release);
+        
+        // 8. 更新全局索引
+        layout_->head_idx.store(count, std::memory_order_release);
+        
+        return true;
     }
 
     // 核心修改：支持动态宽高和大小

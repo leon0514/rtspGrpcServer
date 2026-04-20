@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Generator, Tuple
 
 import stream_service_pb2
 import stream_service_pb2_grpc
+from turbojpeg import TurboJPEG
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -72,6 +73,28 @@ class RemoteCapture:
         self.server_address = server_address
         self.channel: Optional[grpc.Channel] = None
         self.stub: Optional[stream_service_pb2_grpc.RTSPStreamServiceStub] = None
+
+        # self.jpeg_decoder = TurboJPEG()
+
+    def _decode_jpeg(self, jpeg_data: bytes) -> Optional[np.ndarray]:
+        """
+        使用 libjpeg-turbo 解码 JPEG 数据为 BGR 格式的 numpy 数组
+        """
+        if not jpeg_data:
+            return None
+        try:
+            # 直接解码为 BGR 格式，与 OpenCV 的 cv2.imdecode 输出一致
+            img = self.jpeg_decoder.decode(
+                jpeg_data,
+                pixel_format=TJPF_BGR
+            )
+            return img
+        except Exception as e:
+            logging.error(f"TurboJPEG 解码失败: {e}")
+            # 可选的降级方案：回退到 cv2.imdecode
+            # img_array = np.frombuffer(jpeg_data, dtype=np.uint8)
+            # return cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            return None
     
     def connect(self) -> bool:
         """
@@ -308,7 +331,7 @@ class RemoteCapture:
     
     # ==================== 帧获取 ====================
     
-    def read(self, stream_id: str) -> Tuple[bool, Optional[np.ndarray]]:
+    def read(self, stream_id: str) -> Tuple[int, Optional[np.ndarray]]:
         """
         获取指定流的最新帧
         :param stream_id: 流 ID
@@ -316,37 +339,34 @@ class RemoteCapture:
         """
         if not self.stub:
             return -1, None
-        
+
         try:
             req = stream_service_pb2.FrameRequest(stream_id=stream_id)
             resp = self.stub.GetLatestFrame(req, timeout=5)
             frame_seq = getattr(resp, "frame_seq", -1)
             if resp.success and resp.image_data:
-                img_array = np.frombuffer(resp.image_data, dtype=np.uint8)
-                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                if img is not None:
-                    return frame_seq, img
+                img = self._decode_jpeg(resp.image_data)
+                return frame_seq, img
             return frame_seq, None
         except grpc.RpcError:
             return -1, None
     
-    def stream_frames(self, stream_id: str, max_fps: int = 0) -> Generator[Tuple[bool, Optional[np.ndarray]], None, None]:
+    def stream_frames(self, stream_id: str, max_fps: int = 0) -> Generator[Tuple[int, Optional[np.ndarray]], None, None]:
         """
         流式获取视频帧（生成器）
         :param stream_id: 流 ID
         :param max_fps: 最大帧率，0 表示不限制
-        :yield: (成功标志, 图像帧)
+        :yield: (图像帧序列号, 图像帧)
         """
         if not self.stub:
             logging.error("未连接到服务器")
             return
-        
+
         try:
             req = stream_service_pb2.StreamRequest(stream_id=stream_id, max_fps=max_fps)
-            for resp in self.stub.StreamFrames(req):                 
+            for resp in self.stub.StreamFrames(req):
                 if resp.success and resp.image_data and resp.frame_seq != -1:
-                    img_array = np.frombuffer(resp.image_data, dtype=np.uint8)
-                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    img = self._decode_jpeg(resp.image_data)
                     yield (resp.frame_seq, img)
                 else:
                     yield (-1, None)

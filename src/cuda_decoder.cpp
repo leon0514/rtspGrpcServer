@@ -137,24 +137,26 @@ bool CudaDecoder::grab()
 bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
 {
     if (!isOpened() || decoded_frames_available_ <= 0)
+    {
+        printf("No frames available to retrieve\n");
         return false;
+    }
+        
 
     void *gpu_ptr = decoder_->get_frame(&last_pts_, &last_frame_index_);
     if (!gpu_ptr)
+    {
+        printf("Decoder reported available frames but get_frame returned null pointer\n");
         return false;
+    }
+        
 
     // 保存 GPU 帧指针
     last_gpu_frame_ptr_ = static_cast<uint8_t *>(gpu_ptr);
 
-    if (need_data && frames_to_skip_ > 0)
-    {
-        frames_to_skip_--;
-        decoded_frames_available_--;
-        return false;
-    }
-
     if (frames_to_skip_ > 0)
     {
+        printf("Skipping frame, frames_to_skip_=%d\n", frames_to_skip_);
         frames_to_skip_--;
         decoded_frames_available_--;
         return false;
@@ -181,14 +183,15 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
         //              width, height, frame_bytes, width * height * 3);
 
         // 使用解码器报告的实际大小
-        // frame.create(height, width, CV_8UC3);
-        // cudaError_t err = cudaMemcpy(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost);
-        // if (err != cudaSuccess)
-        // {
-        //     spdlog::error("cudaMemcpy failed: {}", cudaGetErrorString(err));
-        //     decoded_frames_available_--;
-        //     return false;
-        // }
+        frame.create(height, width, CV_8UC3);
+        cudaError_t err = cudaMemcpy(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess)
+        {
+            spdlog::error("cudaMemcpy failed: {}", cudaGetErrorString(err));
+            decoded_frames_available_--;
+            return false;
+        }
+        cudaDeviceSynchronize(); // 确保数据已经完全拷贝到 CPU 内存
     }
 
     decoded_frames_available_--;
