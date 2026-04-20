@@ -487,23 +487,31 @@ class ShmCapture:
             } for s in resp.streams]
         except:
             return []
-
-    # --- 属性查询（兼容 OpenCV 风格）---
     
-    def get(self, prop_id: int) -> float:
-        """获取属性（兼容 cv2.CAP_PROP_*）"""
-        if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
-            return self._props.get('width', 0)
-        if prop_id == cv2.CAP_PROP_FRAME_HEIGHT:
-            return self._props.get('height', 0)
-        if prop_id == cv2.CAP_PROP_FPS:
-            return 0  # 共享内存不固定帧率
-        return 0
+    def update_stream_url(self, stream_id: str, new_rtsp_url: str) -> bool:
+        """
+        更新流的 RTSP URL
+        :param stream_id: 流 ID
+        :param new_rtsp_url: 新的 RTSP URL
+        :return: 是否更新成功
+        """
+        if not self.stub:
+            logging.error("未连接到服务器")
+            return False
+        
+        try:
+            req = stream_service_pb2.UpdateStreamRequest(stream_id=stream_id, new_rtsp_url=new_rtsp_url)
+            resp = self.stub.UpdateStream(req, timeout=5)
+            
+            if resp.success:
+                logging.info(f"流 URL 已更新: {stream_id} -> {new_rtsp_url}")
+            else:
+                logging.warning(f"更新流 URL 失败: {resp.message}")
+            return resp.success
+        except grpc.RpcError as e:
+            logging.error(f"更新流 URL 异常: {e.details()}")
+            return False
 
-    def set(self, prop_id: int, value: float) -> bool:
-        """设置属性（部分支持）"""
-        # 共享内存模式下多数属性不可动态设置
-        return False
 
     # --- 上下文管理 ---
     
