@@ -181,14 +181,29 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
 
         // 使用解码器报告的实际大小
         frame.create(height, width, CV_8UC3);
-        cudaError_t err = cudaMemcpy(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost);
-        if (err != cudaSuccess)
+        cudaError_t err;
+        if (cuda_stream_)
         {
-            spdlog::error("cudaMemcpy failed: {}", cudaGetErrorString(err));
-            decoded_frames_available_--;
-            return false;
+            err = cudaMemcpyAsync(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost, cuda_stream_);
+            if (err != cudaSuccess)
+            {
+                spdlog::error("cudaMemcpyAsync failed: {}", cudaGetErrorString(err));
+                decoded_frames_available_--;
+                return false;
+            }
+            cudaStreamSynchronize(cuda_stream_);
         }
-        cudaDeviceSynchronize(); // 确保数据已经完全拷贝到 CPU 内存
+        else
+        {
+            err = cudaMemcpy(frame.data, gpu_ptr, frame_bytes, cudaMemcpyDeviceToHost);
+            if (err != cudaSuccess)
+            {
+                spdlog::error("cudaMemcpy failed: {}", cudaGetErrorString(err));
+                decoded_frames_available_--;
+                return false;
+            }
+            cudaDeviceSynchronize();
+        }
     }
 
     decoded_frames_available_--;

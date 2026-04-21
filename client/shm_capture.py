@@ -37,69 +37,6 @@ import grpc
 import stream_service_pb2
 import stream_service_pb2_grpc
 
-# ==================== POSIX 信号量跨进程通知 ====================
-
-_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-
-class _timespec(ctypes.Structure):
-    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
-
-# sem_open 是变参函数，不能固定 argtypes
-_libc.sem_open.restype = ctypes.c_void_p
-
-_libc.sem_close.argtypes = [ctypes.c_void_p]
-_libc.sem_close.restype = ctypes.c_int
-
-_libc.sem_wait.argtypes = [ctypes.c_void_p]
-_libc.sem_wait.restype = ctypes.c_int
-
-_libc.sem_trywait.argtypes = [ctypes.c_void_p]
-_libc.sem_trywait.restype = ctypes.c_int
-
-_libc.sem_timedwait.argtypes = [ctypes.c_void_p, ctypes.POINTER(_timespec)]
-_libc.sem_timedwait.restype = ctypes.c_int
-
-_libc.sem_post.argtypes = [ctypes.c_void_p]
-_libc.sem_post.restype = ctypes.c_int
-
-_libc.clock_gettime.argtypes = [ctypes.c_int, ctypes.POINTER(_timespec)]
-_libc.clock_gettime.restype = ctypes.c_int
-
-CLOCK_REALTIME = 0
-SEM_FAILED = ctypes.c_void_p(-1).value
-
-
-class _NotifySemaphore:
-    """跨进程 POSIX 有名信号量包装器（用于 C++ 端写帧后通知 Python 端）"""
-
-    def __init__(self, name: str):
-        self._sem = _libc.sem_open(name.encode(), 0)
-        if self._sem is None or self._sem == SEM_FAILED:
-            errno = ctypes.get_errno()
-            raise OSError(errno, f"sem_open failed for {name}: {os.strerror(errno)}")
-
-    def wait(self, timeout_ms: Optional[float] = None) -> bool:
-        """阻塞等待信号量。timeout_ms=None 时无限等待。"""
-        if timeout_ms is None or timeout_ms < 0:
-            return _libc.sem_wait(self._sem) == 0
-        # 计算绝对截止时间（CLOCK_REALTIME）
-        abs_ts = _timespec()
-        if _libc.clock_gettime(CLOCK_REALTIME, ctypes.byref(abs_ts)) != 0:
-            return False
-        sec = int(timeout_ms // 1000)
-        nsec = int((timeout_ms % 1000) * 1_000_000)
-        abs_ts.tv_sec += sec
-        abs_ts.tv_nsec += nsec
-        if abs_ts.tv_nsec >= 1_000_000_000:
-            abs_ts.tv_sec += 1
-            abs_ts.tv_nsec -= 1_000_000_000
-        return _libc.sem_timedwait(self._sem, ctypes.byref(abs_ts)) == 0
-
-    def close(self):
-        if self._sem:
-            _libc.sem_close(self._sem)
-            self._sem = None
-
 # 日志配置
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -149,6 +86,62 @@ CV_DEPTH_TO_NUMPY = {
 }
 
 
+# ==================== POSIX 信号量跨进程通知 ====================
+
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+class _timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+_libc.sem_open.restype = ctypes.c_void_p
+_libc.sem_close.argtypes = [ctypes.c_void_p]
+_libc.sem_close.restype = ctypes.c_int
+_libc.sem_wait.argtypes = [ctypes.c_void_p]
+_libc.sem_wait.restype = ctypes.c_int
+_libc.sem_trywait.argtypes = [ctypes.c_void_p]
+_libc.sem_trywait.restype = ctypes.c_int
+_libc.sem_timedwait.argtypes = [ctypes.c_void_p, ctypes.POINTER(_timespec)]
+_libc.sem_timedwait.restype = ctypes.c_int
+_libc.sem_post.argtypes = [ctypes.c_void_p]
+_libc.sem_post.restype = ctypes.c_int
+_libc.clock_gettime.argtypes = [ctypes.c_int, ctypes.POINTER(_timespec)]
+_libc.clock_gettime.restype = ctypes.c_int
+
+CLOCK_REALTIME = 0
+SEM_FAILED = ctypes.c_void_p(-1).value
+
+
+class _NotifySemaphore:
+    """跨进程 POSIX 有名信号量包装器（用于 C++ 端写帧后通知 Python 端）"""
+
+    def __init__(self, name: str):
+        self._sem = _libc.sem_open(name.encode(), 0)
+        if self._sem is None or self._sem == SEM_FAILED:
+            errno = ctypes.get_errno()
+            raise OSError(errno, f"sem_open failed for {name}: {os.strerror(errno)}")
+
+    def wait(self, timeout_ms: Optional[float] = None) -> bool:
+        """阻塞等待信号量。timeout_ms=None 时无限等待。"""
+        if timeout_ms is None or timeout_ms < 0:
+            return _libc.sem_wait(self._sem) == 0
+        abs_ts = _timespec()
+        if _libc.clock_gettime(CLOCK_REALTIME, ctypes.byref(abs_ts)) != 0:
+            return False
+        sec = int(timeout_ms // 1000)
+        nsec = int((timeout_ms % 1000) * 1_000_000)
+        abs_ts.tv_sec += sec
+        abs_ts.tv_nsec += nsec
+        if abs_ts.tv_nsec >= 1_000_000_000:
+            abs_ts.tv_sec += 1
+            abs_ts.tv_nsec -= 1_000_000_000
+        return _libc.sem_timedwait(self._sem, ctypes.byref(abs_ts)) == 0
+
+    def close(self):
+        if self._sem:
+            _libc.sem_close(self._sem)
+            self._sem = None
+
+
 # ==================== 共享内存读取器（内部类） ====================
 
 class _ShmReader:
@@ -184,7 +177,7 @@ class _ShmReader:
         self._last_idx = -1
         self._connected = False
         self._notify_sem: Optional[_NotifySemaphore] = None
-        self._blocking_mode_logged = False  # 避免重复打印阻塞模式日志
+        self._blocking_mode_logged = False
 
     def __del__(self):
         try:
@@ -347,7 +340,6 @@ class _ShmReader:
             if not self._blocking_mode_logged:
                 logger.info(f"[_ShmReader] Using semaphore blocking mode for {self.stream_id}")
                 self._blocking_mode_logged = True
-            # 信号量可用：真正的阻塞等待
             ok, img, ts = self._try_read()
             if ok:
                 return ok, img, ts
@@ -358,9 +350,8 @@ class _ShmReader:
             if not self._blocking_mode_logged:
                 logger.warning(f"[_ShmReader] Semaphore unavailable for {self.stream_id}, using adaptive polling fallback")
                 self._blocking_mode_logged = True
-            # 信号量不可用：降级为带自适应 sleep 的轮询
             start = time.time()
-            sleep_ms = 1.0  # 起始 1ms
+            sleep_ms = 1.0
             max_sleep_ms = 50.0
             while True:
                 ok, img, ts = self._try_read()
@@ -433,7 +424,9 @@ class ShmCapture:
         self._props: Dict = {}
         self._last_frame_time = 0.0
         self._empty_read_count = 0
-        self._disconnect_check_threshold = 100  # 连续 100 次空读约 100~500ms 后检查状态
+        self._disconnect_check_threshold = 100
+        self._last_heartbeat_time = 0.0
+        self._heartbeat_interval_sec = 10.0
 
     # --- 连接管理 ---
     
@@ -461,7 +454,8 @@ class ShmCapture:
              heartbeat_ms: int = 30000,
              interval_ms: int = 0,
              keep_on_fail: bool = True,
-             max_frame_mb: int = 3) -> bool:
+             max_frame_mb: int = 3,
+             only_key_frames: bool = False) -> bool:
         """
         打开 RTSP 流并启用共享内存传输
         
@@ -472,6 +466,7 @@ class ShmCapture:
         :param interval_ms: 抽帧间隔，0=全帧
         :param keep_on_fail: 连接失败是否保留任务
         :param max_frame_mb: 单帧最大大小（必须与 C++ 端一致）
+        :param only_key_frames: 是否只解码关键帧
         :return: 是否成功
         """
         if self._opened:
@@ -489,7 +484,7 @@ class ShmCapture:
                 gpu_id=gpu_id if decoder_type == DECODER_GPU_NVCUVID else -1,
                 keep_on_failure=keep_on_fail,
                 use_shared_mem=True,  # ✅ 关键
-                only_key_frames=False
+                only_key_frames=only_key_frames
             )
             resp = self._stub.StartStream(req, timeout=10)
             if not resp.success:
@@ -527,6 +522,7 @@ class ShmCapture:
                 'gpu_id': gpu_id,
                 'width': 0, 'height': 0,  # 动态更新
             }
+            self._last_heartbeat_time = time.time()
             logger.info(f"✓ Opened: {rtsp_url[:60]}...")
             return True
         except Exception as e:
@@ -590,6 +586,20 @@ class ShmCapture:
             self._props['height'], self._props['width'] = img.shape[:2]
         return (img is not None), img
 
+    def _auto_keepalive(self):
+        """SHM 模式下定期通过 gRPC 更新心跳，防止服务端超时清理"""
+        now = time.time()
+        if now - self._last_heartbeat_time >= self._heartbeat_interval_sec:
+            self._last_heartbeat_time = now
+            try:
+                if self._stream_id and self._stub:
+                    self._stub.CheckStream(
+                        stream_service_pb2.CheckRequest(stream_id=self._stream_id),
+                        timeout=3
+                    )
+            except Exception as e:
+                logger.debug(f"Keepalive failed: {e}")
+
     def read(self, blocking: bool = False, timeout_ms: Optional[float] = None) -> Tuple[bool, Optional[np.ndarray]]:
         """grab + retrieve 组合（推荐用法）
 
@@ -598,9 +608,13 @@ class ShmCapture:
 
         增加自动断线检测：连续空读超过阈值后，会查询 gRPC 状态，
         若服务端已停止则自动 release()，避免无限空转和异常报错。
+        同时内置自动保活：每 10 秒通过 gRPC CheckStream 更新心跳。
         """
         if not self._shm or not self._opened:
             return False, None
+
+        self._auto_keepalive()
+
         ok, img, _ = self._shm.read(blocking=blocking, timeout_ms=timeout_ms)
         if ok and img is not None:
             self._empty_read_count = 0

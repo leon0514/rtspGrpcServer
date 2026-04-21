@@ -2,6 +2,7 @@
 #include "task_scheduler.hpp"
 #include "nvjpeg_encoder.hpp"
 #include "opencv_encoder.hpp"
+#include "cuda_decoder.hpp"
 #include <chrono>
 #include <thread>
 #include <spdlog/spdlog.h>
@@ -71,6 +72,31 @@ StreamTask::StreamTask(const std::string &url,
     updateHeartbeat();
     last_encode_time_ = std::chrono::steady_clock::now();
 
+    // 为每路 GPU 流创建独立的 CUDA Stream
+    if (gpu_id_ >= 0)
+    {
+        CUDATools::AutoDevice auto_device_exchange(gpu_id_);
+        cudaError_t err = cudaStreamCreate(&cuda_stream_);
+        if (err != cudaSuccess)
+        {
+            spdlog::warn("Failed to create CUDA stream for stream {}: {}", stream_id_, cudaGetErrorString(err));
+            cuda_stream_ = nullptr;
+        }
+        else
+        {
+            spdlog::info("[StreamTask] CUDA stream created for stream {} on GPU {}", stream_id_, gpu_id_);
+        }
+
+        if (cuda_stream_ && decoder_)
+        {
+            auto *cuda_decoder = dynamic_cast<CudaDecoder *>(decoder_.get());
+            if (cuda_decoder)
+            {
+                cuda_decoder->setStream(cuda_stream_);
+            }
+        }
+    }
+
     if (use_shared_mem_)
     {
         try
@@ -101,6 +127,13 @@ StreamTask::~StreamTask()
         } 
     }
     stop();
+    if (cuda_stream_)
+    {
+        CUDATools::AutoDevice auto_device_exchange(gpu_id_);
+        cudaStreamDestroy(cuda_stream_);
+        cuda_stream_ = nullptr;
+        spdlog::info("[StreamTask] CUDA stream destroyed for stream {}", stream_id_);
+    }
     // 清理最新的引用，引用计数减一，可能触发内存归还或释放
     {
         std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
@@ -365,10 +398,6 @@ void StreamTask::stepCompute()
         CUDATools::AutoDevice auto_device_exchange(gpu_id_);
     }
 
-    if (use_shared_mem_ && shm_channel_)
-    {
-        keepAlive();
-    }
     std::unique_lock<std::mutex> lock(decoder_mutex_);
     if (!decoder_ || !decoder_->isOpened())
     {
@@ -409,6 +438,15 @@ void StreamTask::stepCompute()
         auto encode_buffer = frame_pool_->acquire();
         auto encoder = getThreadLocalEncoder(use_gpu_encoder_, gpu_id_, jpeg_quality_);
         
+        if (cuda_stream_)
+        {
+            auto *nvjpeg_enc = dynamic_cast<NvjpegEncoder *>(encoder.get());
+            if (nvjpeg_enc)
+            {
+                nvjpeg_enc->setStream(cuda_stream_);
+            }
+        }
+
         if (decoder_->isGpuFrame() && encoder->supportsGpuEncode())
         {
             if (decoder_->retrieve(reusable_frame_, true))

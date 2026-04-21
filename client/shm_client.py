@@ -10,19 +10,18 @@ RTSP = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
 def main():
     with ShmCapture(SERVER) as cap:
         # 打开流（自动启用共享内存）
-        if not cap.open(RTSP, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0):
+        if not cap.open(RTSP, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=True):
             print("✗ 打开失败")
             return 1
         print(f"✓ 已打开: {RTSP[:50]}...")
         
-        # 主循环（使用阻塞读取，无需手动 sleep）
+        # 主循环（阻塞读取，无需手动 sleep）
         frame_count = 0
         start_time = time.time()
         
         while cap.isOpened():
             ret, frame = cap.read(blocking=True, timeout_ms=1000)
             if not ret or frame is None:
-                # 超时或被中断，继续循环（会自动检查 isOpened）
                 continue
             frame_count += 1
             

@@ -12,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include "zero_copy_channel.hpp"
+#include <cuda_runtime.h>
 
 enum class StreamStatus
 {
@@ -100,6 +101,7 @@ private:
     bool keep_on_failure_;
     bool use_shared_mem_;
     int gpu_id_ = -1;
+    cudaStream_t cuda_stream_ = nullptr; // 每路流独立的 CUDA Stream
 
     std::unique_ptr<IVideoDecoder> decoder_;
     bool use_gpu_encoder_ = false;

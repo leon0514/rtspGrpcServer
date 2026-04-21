@@ -305,6 +305,9 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
 
     if (task)
     {
+        // CheckStream 同时充当心跳保活
+        task->keepAlive();
+
         // 填充基本信息
         info->set_status(static_cast<streamingservice::StreamStatus>(task->getStatus()));
         info->set_rtsp_url(task->getUrl());

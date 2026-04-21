@@ -184,7 +184,8 @@ bool NvjpegEncoder::encode(const cv::Mat &frame, std::string &out_buffer)
     }
 
     // 将图像数据拷贝到 GPU
-    cudaError_t err = cudaMemcpyAsync(d_input_, frame.data, input_size, cudaMemcpyHostToDevice, stream_);
+    cudaStream_t stream = activeStream();
+    cudaError_t err = cudaMemcpyAsync(d_input_, frame.data, input_size, cudaMemcpyHostToDevice, stream);
     if (err != cudaSuccess)
     {
         spdlog::error("Failed to copy image to GPU: {}", cudaGetErrorString(err));
@@ -208,6 +209,8 @@ bool NvjpegEncoder::encodeGpu(uint8_t *gpu_bgr_ptr, int width, int height, std::
 
 bool NvjpegEncoder::encodeInternal(uint8_t *gpu_ptr, int width, int height, int pitch, std::string &out_buffer)
 {
+    cudaStream_t stream = activeStream();
+
     // 设置输入图像
     nvjpegImage_t nv_image;
     nv_image.channel[0] = gpu_ptr;
@@ -227,7 +230,7 @@ bool NvjpegEncoder::encodeInternal(uint8_t *gpu_ptr, int width, int height, int 
         NVJPEG_INPUT_BGRI, // BGR interleaved
         width,
         height,
-        stream_);
+        stream);
 
     if (status != NVJPEG_STATUS_SUCCESS)
     {
@@ -242,7 +245,7 @@ bool NvjpegEncoder::encodeInternal(uint8_t *gpu_ptr, int width, int height, int 
         encoder_state_,
         nullptr,
         &length,
-        stream_);
+        stream);
 
     if (status != NVJPEG_STATUS_SUCCESS)
     {
@@ -257,7 +260,7 @@ bool NvjpegEncoder::encodeInternal(uint8_t *gpu_ptr, int width, int height, int 
         encoder_state_,
         reinterpret_cast<uint8_t *>(&out_buffer[0]),
         &length,
-        stream_);
+        stream);
 
     if (status != NVJPEG_STATUS_SUCCESS)
     {
@@ -265,7 +268,7 @@ bool NvjpegEncoder::encodeInternal(uint8_t *gpu_ptr, int width, int height, int 
         return false;
     }
 
-    cudaStreamSynchronize(stream_);
+    cudaStreamSynchronize(stream);
 
     last_width_ = width;
     last_height_ = height;

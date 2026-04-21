@@ -15,15 +15,19 @@ public:
     bool encodeGpu(uint8_t* gpu_bgr_ptr, int width, int height, std::string& out_buffer) override;
     bool supportsGpuEncode() const override { return true; }
 
+    void setStream(cudaStream_t stream) { external_stream_ = stream; }
+
 private:
     bool initialize();
     void cleanup();
     bool encodeInternal(uint8_t* gpu_ptr, int width, int height, int pitch, std::string& out_buffer);
+    cudaStream_t activeStream() const { return external_stream_ ? external_stream_ : stream_; }
     
     nvjpegHandle_t nvjpeg_handle_ = nullptr;
     nvjpegEncoderState_t encoder_state_ = nullptr;
     nvjpegEncoderParams_t encoder_params_ = nullptr;
     cudaStream_t stream_ = nullptr;
+    cudaStream_t external_stream_ = nullptr;
     
     // GPU 缓冲区（仅用于 CPU 输入时）
     uint8_t* d_input_ = nullptr;

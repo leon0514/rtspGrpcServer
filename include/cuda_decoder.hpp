@@ -32,6 +32,8 @@ public:
 
     bool onlyKeyFrames() const override { return only_key_frames_; }
 
+    void setStream(cudaStream_t stream) { cuda_stream_ = stream; }
+
 private:
     std::shared_ptr<FFHDDemuxer::FFmpegDemuxer> demuxer_;
     std::shared_ptr<FFHDDecoder::CUVIDDecoder> decoder_;
@@ -45,6 +47,7 @@ private:
     // 用于处理解码器延迟（多个输入包才产出一帧，或一个包产出多帧的情况）
     int decoded_frames_available_ = 0;
     bool only_key_frames_ = false; // 是否只处理关键帧（可选）
+    cudaStream_t cuda_stream_ = nullptr; // 每路流独立的 CUDA Stream
 
 private:
     std::string last_url_;    // 保存 URL 用于重连
