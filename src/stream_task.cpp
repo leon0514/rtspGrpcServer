@@ -382,7 +382,8 @@ void StreamTask::stepCompute()
     // === 分支 1: 共享内存模式 -> 直接传原始 Mat ===
     if (use_shared_mem_ && shm_channel_)
     {
-        keepAlive();
+        // 注意：SHM 模式下不要在服务端自己 keepAlive，否则心跳永远不失效
+        // 客户端应通过 gRPC CheckStream / isOpened() 来维持心跳
         // 直接获取解码后的 Mat (GPU/CPU 自适应)
         bool retrieved = decoder_->retrieve(reusable_frame_, true);
         if (retrieved && !reusable_frame_.empty())

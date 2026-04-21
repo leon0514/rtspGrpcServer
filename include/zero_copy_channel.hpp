@@ -69,7 +69,10 @@ public:
         std::string sem_name = "/" + stream_id_ + "_notify";
         if (role_ == 0)
         {
+            // 临时清除 umask，确保信号量文件权限真正为 0666（跨用户/容器访问）
+            auto old_umask = umask(0);
             notify_sem_ = sem_open(sem_name.c_str(), O_CREAT | O_RDWR, 0666, 0);
+            umask(old_umask);
         }
         else
         {
