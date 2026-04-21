@@ -1,5 +1,5 @@
 """
-ShmCapture - 精简版共享内存视频捕获客户端
+ShmCapture - 共享内存视频捕获客户端
 
 特点:
   ✅ 仅保留共享内存必需功能，移除 JPEG/网络帧传输代码
@@ -28,12 +28,77 @@ import struct
 import numpy as np
 import os
 import logging
+import ctypes
+import ctypes.util
 from typing import Optional, Tuple, List, Dict
 
 # gRPC 导入
 import grpc
 import stream_service_pb2
 import stream_service_pb2_grpc
+
+# ==================== POSIX 信号量跨进程通知 ====================
+
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+class _timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+# sem_open 是变参函数，不能固定 argtypes
+_libc.sem_open.restype = ctypes.c_void_p
+
+_libc.sem_close.argtypes = [ctypes.c_void_p]
+_libc.sem_close.restype = ctypes.c_int
+
+_libc.sem_wait.argtypes = [ctypes.c_void_p]
+_libc.sem_wait.restype = ctypes.c_int
+
+_libc.sem_trywait.argtypes = [ctypes.c_void_p]
+_libc.sem_trywait.restype = ctypes.c_int
+
+_libc.sem_timedwait.argtypes = [ctypes.c_void_p, ctypes.POINTER(_timespec)]
+_libc.sem_timedwait.restype = ctypes.c_int
+
+_libc.sem_post.argtypes = [ctypes.c_void_p]
+_libc.sem_post.restype = ctypes.c_int
+
+_libc.clock_gettime.argtypes = [ctypes.c_int, ctypes.POINTER(_timespec)]
+_libc.clock_gettime.restype = ctypes.c_int
+
+CLOCK_REALTIME = 0
+SEM_FAILED = ctypes.c_void_p(-1).value
+
+
+class _NotifySemaphore:
+    """跨进程 POSIX 有名信号量包装器（用于 C++ 端写帧后通知 Python 端）"""
+
+    def __init__(self, name: str):
+        self._sem = _libc.sem_open(name.encode(), 0)
+        if self._sem is None or self._sem == SEM_FAILED:
+            errno = ctypes.get_errno()
+            raise OSError(errno, f"sem_open failed for {name}: {os.strerror(errno)}")
+
+    def wait(self, timeout_ms: Optional[float] = None) -> bool:
+        """阻塞等待信号量。timeout_ms=None 时无限等待。"""
+        if timeout_ms is None or timeout_ms < 0:
+            return _libc.sem_wait(self._sem) == 0
+        # 计算绝对截止时间（CLOCK_REALTIME）
+        abs_ts = _timespec()
+        if _libc.clock_gettime(CLOCK_REALTIME, ctypes.byref(abs_ts)) != 0:
+            return False
+        sec = int(timeout_ms // 1000)
+        nsec = int((timeout_ms % 1000) * 1_000_000)
+        abs_ts.tv_sec += sec
+        abs_ts.tv_nsec += nsec
+        if abs_ts.tv_nsec >= 1_000_000_000:
+            abs_ts.tv_sec += 1
+            abs_ts.tv_nsec -= 1_000_000_000
+        return _libc.sem_timedwait(self._sem, ctypes.byref(abs_ts)) == 0
+
+    def close(self):
+        if self._sem:
+            _libc.sem_close(self._sem)
+            self._sem = None
 
 # 日志配置
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -118,6 +183,14 @@ class _ShmReader:
         self._shm_view: Optional[memoryview] = None
         self._last_idx = -1
         self._connected = False
+        self._notify_sem: Optional[_NotifySemaphore] = None
+        self._blocking_mode_logged = False  # 避免重复打印阻塞模式日志
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def connect(self) -> bool:
         """连接共享内存"""
@@ -131,11 +204,18 @@ class _ShmReader:
                     self._mmap_obj = mmap.mmap(fd, total_size, prot=mmap.PROT_READ)
                     self._shm_view = memoryview(self._mmap_obj)  # 高效切片
                     os.close(fd)
+                    # 连接跨进程通知信号量
+                    try:
+                        self._notify_sem = _NotifySemaphore(f"/{self.stream_id}_notify")
+                        logger.info(f"✓ SHM notify semaphore connected: /{self.stream_id}_notify")
+                    except OSError as e:
+                        logger.warning(f"SHM notify semaphore not available (will use polling fallback): {e}")
+                        self._notify_sem = None
                     self._connected = True
                     logger.debug(f"✓ SHM connected: {path}")
                     return True
                 except Exception as e:
-                    logger.debug(f"✗ SHM connect failed {path}: {e}")
+                    logger.error(f"✗ SHM connect failed {path}: {e}")
         return False
 
     def _read_u64(self, offset: int) -> Optional[int]:
@@ -253,8 +333,52 @@ class _ShmReader:
             logger.debug(f"retrieve error: {e}")
             return None, 0
 
-    def read(self) -> Tuple[bool, Optional[np.ndarray], int]:
-        """grab + retrieve 组合"""
+    def read(self, blocking: bool = False, timeout_ms: Optional[float] = None) -> Tuple[bool, Optional[np.ndarray], int]:
+        """grab + retrieve 组合
+
+        :param blocking: 是否阻塞等待新帧。True 时无新帧会等待 C++ 端通知（通过 POSIX 信号量）。
+                          若服务端信号量不可用，会自动降级为带休眠的轮询，避免 CPU 飙高。
+        :param timeout_ms: 阻塞等待的超时时间（毫秒），None 表示无限等待。
+        """
+        if not blocking:
+            return self._try_read()
+
+        if self._notify_sem:
+            if not self._blocking_mode_logged:
+                logger.info(f"[_ShmReader] Using semaphore blocking mode for {self.stream_id}")
+                self._blocking_mode_logged = True
+            # 信号量可用：真正的阻塞等待
+            ok, img, ts = self._try_read()
+            if ok:
+                return ok, img, ts
+            if not self._notify_sem.wait(timeout_ms):
+                return False, None, 0
+            return self._try_read()
+        else:
+            if not self._blocking_mode_logged:
+                logger.warning(f"[_ShmReader] Semaphore unavailable for {self.stream_id}, using adaptive polling fallback")
+                self._blocking_mode_logged = True
+            # 信号量不可用：降级为带自适应 sleep 的轮询
+            start = time.time()
+            sleep_ms = 1.0  # 起始 1ms
+            max_sleep_ms = 50.0
+            while True:
+                ok, img, ts = self._try_read()
+                if ok:
+                    return ok, img, ts
+                if timeout_ms is not None:
+                    elapsed = (time.time() - start) * 1000
+                    if elapsed >= timeout_ms:
+                        return False, None, 0
+                    remaining = timeout_ms - elapsed
+                    if sleep_ms > remaining:
+                        sleep_ms = remaining
+                if sleep_ms > 0:
+                    time.sleep(sleep_ms / 1000.0)
+                sleep_ms = min(sleep_ms * 1.5, max_sleep_ms)
+
+    def _try_read(self) -> Tuple[bool, Optional[np.ndarray], int]:
+        """内部非阻塞读取"""
         if not self.grab():
             return False, None, 0
         img, ts = self.retrieve()
@@ -262,14 +386,30 @@ class _ShmReader:
 
     def close(self):
         """释放资源"""
-        if self._mmap_obj:
-            self._mmap_obj.close()
-            self._mmap_obj = None
+        # 必须先释放 memoryview，否则 mmap.close() 会报 BufferError:
+        # "cannot close exported pointers exist"
         self._shm_view = None
+        if self._mmap_obj:
+            try:
+                self._mmap_obj.close()
+            except BufferError:
+                # 外部可能仍持有 numpy 数组（memoryview 的导出指针），
+                # 此时无法关闭 mmap。进程退出时 OS 会自动回收，忽略即可。
+                pass
+            self._mmap_obj = None
+        if self._notify_sem:
+            try:
+                self._notify_sem.close()
+            except Exception:
+                pass
+            self._notify_sem = None
         self._connected = False
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 # ==================== 主类：ShmCapture ====================
@@ -291,6 +431,9 @@ class ShmCapture:
         self._url: Optional[str] = None
         self._opened = False
         self._props: Dict = {}
+        self._last_frame_time = 0.0
+        self._empty_read_count = 0
+        self._disconnect_check_threshold = 100  # 连续 100 次空读约 100~500ms 后检查状态
 
     # --- 连接管理 ---
     
@@ -392,36 +535,44 @@ class ShmCapture:
             return False
 
     def release(self):
-        """释放所有资源"""
-        # 1. 停止流
-        if self._stream_id and self._stub:
-            try:
-                req = stream_service_pb2.StopRequest(stream_id=self._stream_id)
-                self._stub.StopStream(req, timeout=3)
-            except:
-                pass  # 忽略停止错误
-        # 2. 关闭共享内存
+        """释放本地客户端资源（不停止服务端流）
+        
+        注意：此方法只关闭本地 SHM 和 gRPC 连接，不会调用服务端 StopStream。
+        如果你需要停止服务端流，请显式调用 stop() 方法。
+        """
+        # 1. 关闭共享内存（捕获 BufferError，防止外部仍持有 numpy 数组时崩溃）
         if self._shm:
-            self._shm.close()
+            try:
+                self._shm.close()
+            except Exception:
+                pass
             self._shm = None
-        # 3. 关闭 gRPC
+        # 2. 关闭 gRPC
         if self._channel:
-            self._channel.close()
+            try:
+                self._channel.close()
+            except Exception:
+                pass
             self._channel = None
             self._stub = None
-        # 4. 重置状态
+        # 3. 重置状态
         self._stream_id = None
         self._url = None
         self._opened = False
-        logger.debug("✓ Released")
+        self._empty_read_count = 0
+        logger.debug("✓ Released local resources")
 
     def isOpened(self) -> bool:
-        """检查是否已打开"""
+        """检查是否已打开（同时检查 gRPC 流状态和 SHM 连接状态）"""
         if not self._opened or not self._shm:
             return False
         # 额外检查流状态
         status = self.get_stream_status(self._stream_id)
-        return status == STATUS_CONNECTED
+        if status != STATUS_CONNECTED:
+            return False
+        # 额外检查 SHM 文件是否还在（服务端可能已 shm_unlink）
+        # 注意：已 mmap 的不影响，但这里作为辅助判断
+        return True
 
     # --- 帧获取（核心功能）---
     
@@ -439,14 +590,36 @@ class ShmCapture:
             self._props['height'], self._props['width'] = img.shape[:2]
         return (img is not None), img
 
-    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """grab + retrieve 组合（推荐用法）"""
-        if not self._shm:
+    def read(self, blocking: bool = False, timeout_ms: Optional[float] = None) -> Tuple[bool, Optional[np.ndarray]]:
+        """grab + retrieve 组合（推荐用法）
+
+        :param blocking: 是否阻塞等待新帧。True 时利用 POSIX 信号量由 C++ 端唤醒，无需手动 sleep。
+        :param timeout_ms: 阻塞等待超时（毫秒），None 表示无限等待。
+
+        增加自动断线检测：连续空读超过阈值后，会查询 gRPC 状态，
+        若服务端已停止则自动 release()，避免无限空转和异常报错。
+        """
+        if not self._shm or not self._opened:
             return False, None
-        ok, img, _ = self._shm.read()
+        ok, img, _ = self._shm.read(blocking=blocking, timeout_ms=timeout_ms)
         if ok and img is not None:
+            self._empty_read_count = 0
+            self._last_frame_time = time.time()
             self._props['height'], self._props['width'] = img.shape[:2]
-        return ok, img
+            return True, img
+
+        # 未读到帧，计数（仅在非阻塞模式下累积，阻塞超时不算）
+        if not blocking:
+            self._empty_read_count += 1
+            # 达到阈值后检查服务端是否存活
+            if self._empty_read_count >= self._disconnect_check_threshold:
+                self._empty_read_count = 0
+                if not self.isOpened():
+                    logger.warning("[ShmCapture] Stream disconnected or server stopped, auto-releasing resources")
+                    self.release()
+                    return False, None
+
+        return False, None
 
     # --- 流管理（仅保留必需方法）---
     
@@ -522,4 +695,7 @@ class ShmCapture:
         self.release()
 
     def __del__(self):
-        self.release()
+        try:
+            self.release()
+        except Exception:
+            pass

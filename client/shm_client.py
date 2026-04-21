@@ -15,14 +15,14 @@ def main():
             return 1
         print(f"✓ 已打开: {RTSP[:50]}...")
         
-        # 主循环
+        # 主循环（使用阻塞读取，无需手动 sleep）
         frame_count = 0
         start_time = time.time()
         
         while cap.isOpened():
-            ret, frame = cap.read()
+            ret, frame = cap.read(blocking=True, timeout_ms=1000)
             if not ret or frame is None:
-                time.sleep(0.05)  # 无新帧时短暂休眠
+                # 超时或被中断，继续循环（会自动检查 isOpened）
                 continue
             frame_count += 1
             

@@ -2,6 +2,9 @@
 #include <memory>
 #include <filesystem>
 #include <thread> // for hardware_concurrency
+#include <atomic>
+#include <csignal>
+#include <chrono>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include <grpcpp/health_check_service_interface.h>
@@ -19,6 +22,16 @@
 extern "C"
 {
 #include <libavformat/avformat.h>
+}
+
+// 全局变量用于信号处理，实现优雅关闭
+// 注意：信号处理函数中只设置原子标志，绝不调用任何可能持有锁的函数（如 Shutdown()）
+static std::atomic<bool> g_shutdown_requested{false};
+
+extern "C" void signalHandler(int signum)
+{
+    (void)signum;
+    g_shutdown_requested.store(true);
 }
 
 void display_banner()
@@ -177,19 +190,43 @@ int main(int argc, char **argv)
     // grpc::EnableDefaultHealthCheckService(true);
     grpc::reflection::InitProtoReflectionServerBuilderPlugin();
 
-    RTSPServiceImpl service;
+    auto service = std::make_unique<RTSPServiceImpl>();
 
     grpc::ServerBuilder builder;
     builder.SetMaxReceiveMessageSize(20 * 1024 * 1024); // 增大一点缓冲
     builder.SetMaxSendMessageSize(20 * 1024 * 1024);
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
+    builder.RegisterService(service.get());
 
     std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
     spdlog::info(">>> 🚀 C++ RTSP gRPC Server Listening on {} <<<", server_address);
 
-    // 阻塞等待
-    server->Wait();
+    // 注册信号处理函数，捕获 Ctrl+C (SIGINT) 和 kill (SIGTERM)
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+
+    // 在后台线程阻塞等待 gRPC 连接，主线程轮询检查关闭标志
+    // 这样 Shutdown() 可以在主线程安全调用，避免信号处理函数中死锁
+    std::thread wait_thread([&server]() {
+        server->Wait();
+    });
+
+    while (!g_shutdown_requested.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    spdlog::info("Interrupt signal received. Shutting down gracefully...");
+    server->Shutdown();
+    wait_thread.join();
+
+    // 显式释放所有流资源，确保 CUDA decoder/encoder 在 CUDA runtime 卸载前被销毁
+    service.reset();
+
+    // 显式停止后台线程池，确保 thread_local 的 NvjpegEncoder 在 CUDA runtime 卸载前被销毁
+    TimerScheduler::instance().stop();
+    TaskScheduler::instance().shutdown();
+
+    spdlog::info("Server shutdown complete. Cleaning up resources...");
 
     return 0;
 }

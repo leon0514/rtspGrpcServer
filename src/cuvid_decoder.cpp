@@ -547,45 +547,58 @@ namespace FFHDDecoder
 
         virtual ~CUVIDDecoderImpl()
         {
-            CUDATools::AutoDevice auto_device_exchange(m_gpuID);
-            if (m_cuvidStream)
+            try
             {
-                checkCudaDriver(cuStreamSynchronize(m_cuvidStream));
+                // 防御性检查：如果 CUDA runtime 正在卸载，跳过所有清理
+                // 避免在程序退出时因静态析构顺序问题而崩溃
+                if (cudaSetDevice(m_gpuID) == cudaErrorCudartUnloading)
+                    return;
+
+                CUDATools::AutoDevice auto_device_exchange(m_gpuID);
+                if (m_cuvidStream)
+                {
+                    checkCudaDriver(cuStreamSynchronize(m_cuvidStream));
+                }
+                if (m_hParser)
+                    cuvidDestroyVideoParser(m_hParser);
+
+                if (m_hDecoder)
+                    cuvidDestroyDecoder(m_hDecoder);
+
+                for (uint8_t *pFrame : m_vpFrame)
+                {
+                    if (m_bUseDeviceFrame)
+                        // cuMemFree((CUdeviceptr)pFrame);
+                        cudaFree(pFrame);
+                    else
+                        cudaFreeHost(pFrame);
+                }
+
+                if (m_pYUVFrame)
+                {
+                    cuMemFree((CUdeviceptr)m_pYUVFrame);
+                    m_pYUVFrame = 0;
+                }
+
+                if (m_pBGRFrame)
+                {
+                    cuMemFree((CUdeviceptr)m_pBGRFrame);
+                    m_pBGRFrame = 0;
+                }
+
+                // 2023-05-08 释放cudastream Mike
+                if (m_cuvidStream)
+                {
+                    cudaStreamDestroy(m_cuvidStream);
+                }
+
+                cuvidCtxLockDestroy(m_ctxLock);
             }
-            if (m_hParser)
-                cuvidDestroyVideoParser(m_hParser);
-
-            if (m_hDecoder)
-                cuvidDestroyDecoder(m_hDecoder);
-
-            for (uint8_t *pFrame : m_vpFrame)
+            catch (...)
             {
-                if (m_bUseDeviceFrame)
-                    // cuMemFree((CUdeviceptr)pFrame);
-                    cudaFree(pFrame);
-                else
-                    cudaFreeHost(pFrame);
+                // 析构函数中绝不能抛出异常，否则会导致 std::terminate
+                // 静默忽略所有清理错误（通常是 CUDA runtime 已卸载）
             }
-
-            if (m_pYUVFrame)
-            {
-                cuMemFree((CUdeviceptr)m_pYUVFrame);
-                m_pYUVFrame = 0;
-            }
-
-            if (m_pBGRFrame)
-            {
-                cuMemFree((CUdeviceptr)m_pBGRFrame);
-                m_pBGRFrame = 0;
-            }
-
-            // 2023-05-08 释放cudastream Mike
-            if (m_cuvidStream)
-            {
-                cudaStreamDestroy(m_cuvidStream);
-            }
-
-            cuvidCtxLockDestroy(m_ctxLock);
         }
 
     private:

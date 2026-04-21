@@ -63,6 +63,16 @@ public:
         spdlog::info("TaskScheduler initialized. GPUs detected: {} (Lazy Loading enabled)", gpu_count);
     }
 
+    // 程序退出前调用：显式销毁所有线程池，确保 thread_local CUDA 资源
+    // 在 CUDA runtime 静态卸载之前被释放，避免崩溃
+    void shutdown()
+    {
+        std::lock_guard<std::mutex> lock(init_mutex_);
+        gpu_compute_pools_.clear();
+        cpu_compute_pool_.reset();
+        spdlog::info("TaskScheduler shutdown complete.");
+    }
+
 private:
     TaskScheduler() = default;
 

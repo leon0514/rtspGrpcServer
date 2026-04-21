@@ -138,7 +138,6 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
 {
     if (!isOpened() || decoded_frames_available_ <= 0)
     {
-        printf("No frames available to retrieve\n");
         return false;
     }
         
@@ -146,7 +145,6 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
     void *gpu_ptr = decoder_->get_frame(&last_pts_, &last_frame_index_);
     if (!gpu_ptr)
     {
-        printf("Decoder reported available frames but get_frame returned null pointer\n");
         return false;
     }
         
@@ -156,7 +154,6 @@ bool CudaDecoder::retrieve(cv::Mat &frame, bool need_data)
 
     if (frames_to_skip_ > 0)
     {
-        printf("Skipping frame, frames_to_skip_=%d\n", frames_to_skip_);
         frames_to_skip_--;
         decoded_frames_available_--;
         return false;

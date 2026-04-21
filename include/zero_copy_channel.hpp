@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <cstring>
+#include <semaphore.h>
+#include <spdlog/spdlog.h>
 
 constexpr size_t MAX_SHM_FRAME_SIZE = 6  * 2560 * 1440; // 3MB
 constexpr int SHM_SLOT_COUNT = 8;
@@ -63,6 +65,26 @@ public:
             layout_ = (ShmLayout *)mmap(nullptr, total_size, PROT_READ, MAP_SHARED, shm_fd_, 0);
         }
 
+        // 创建/打开跨进程通知信号量（只有生产者需要创建）
+        std::string sem_name = "/" + stream_id_ + "_notify";
+        if (role_ == 0)
+        {
+            notify_sem_ = sem_open(sem_name.c_str(), O_CREAT | O_RDWR, 0666, 0);
+        }
+        else
+        {
+            notify_sem_ = sem_open(sem_name.c_str(), 0);
+        }
+        if (notify_sem_ == SEM_FAILED)
+        {
+            spdlog::warn("[ZeroCopyChannel] Notify semaphore unavailable for {} (errno={}), SHM will work without cross-process notify", stream_id_, errno);
+            notify_sem_ = nullptr; // 信号量可选，不影响核心功能
+        }
+        else
+        {
+            spdlog::info("[ZeroCopyChannel] Notify semaphore ready: {} (role={})", sem_name, role_ == 0 ? "producer" : "consumer");
+        }
+
         // printf("--- Memory Map Debug ---\n");
         // printf("Offset of sequence: %zu\n", offsetof(ShmFrameSlot, sequence));
         // printf("Offset of meta: %zu\n", offsetof(ShmFrameSlot, meta));
@@ -76,13 +98,22 @@ public:
             munmap(layout_, sizeof(ShmLayout));
         if (shm_fd_ >= 0)
             close(shm_fd_);
+        if (notify_sem_)
+        {
+            sem_close(notify_sem_);
+            if (role_ == 0)
+            {
+                sem_unlink(("/" + stream_id_ + "_notify").c_str());
+                spdlog::info("[ZeroCopyChannel] Notify semaphore cleaned up: /{}_notify", stream_id_);
+            }
+            notify_sem_ = nullptr;
+        }
     }
 
     bool write_frame_mat(const cv::Mat& frame, uint64_t timestamp)
     {
         if (!layout_ || frame.empty())
         {
-            printf("Invalid frame or uninitialized shared memory layout\n");
             return false;
         }
             
@@ -127,6 +158,15 @@ public:
         
         // 8. 更新全局索引
         layout_->head_idx.store(count, std::memory_order_release);
+
+        // 9. 通知等待的客户端有新帧
+        if (notify_sem_)
+        {
+            if (sem_post(notify_sem_) != 0)
+            {
+                spdlog::debug("[ZeroCopyChannel] sem_post failed for {} (errno={})", stream_id_, errno);
+            }
+        }
         
         return true;
     }
@@ -158,6 +198,15 @@ public:
 
         // 5. 更新索引
         layout_->head_idx.store(count, std::memory_order_release);
+
+        // 6. 通知等待的客户端有新帧
+        if (notify_sem_)
+        {
+            if (sem_post(notify_sem_) != 0)
+            {
+                spdlog::debug("[ZeroCopyChannel] sem_post failed for {} (errno={})", stream_id_, errno);
+            }
+        }
     }
 
     void cleanup()
@@ -174,6 +223,14 @@ public:
         }
         // 关键步骤：从内核中删除该共享内存对象
         shm_unlink(("/" + stream_id_).c_str());
+        // 删除通知信号量
+        if (notify_sem_)
+        {
+            sem_close(notify_sem_);
+            sem_unlink(("/" + stream_id_ + "_notify").c_str());
+            spdlog::info("[ZeroCopyChannel] Notify semaphore cleaned up: /{}_notify", stream_id_);
+            notify_sem_ = nullptr;
+        }
     }
 
 private:
@@ -182,4 +239,5 @@ private:
     int shm_fd_ = -1;
     ShmLayout *layout_ = nullptr;
     uint64_t write_count_ = 0;
+    sem_t *notify_sem_ = nullptr;
 };

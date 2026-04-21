@@ -376,24 +376,17 @@ void StreamTask::stepCompute()
         scheduleNext(0);
         return;
     }
-    printf("=== stepCompute start: %zu ms after grab ===\n", delay_ms);
-    printf("use shared_mem_ = %d\n", use_shared_mem_);
-    printf("shm_channel_ : %s\n", shm_channel_ ? "initialized" : "null");
+
     bool frame_ready = false;
     
     // === 分支 1: 共享内存模式 -> 直接传原始 Mat ===
     if (use_shared_mem_ && shm_channel_)
     {
         keepAlive();
-        printf("Attempting to retrieve frame for SHM...\n");
         // 直接获取解码后的 Mat (GPU/CPU 自适应)
         bool retrieved = decoder_->retrieve(reusable_frame_, true);
-        printf("Frame retrieve for SHM: %s, frame valid: %d\n", retrieved ? "success" : "failure", !reusable_frame_.empty());
         if (retrieved && !reusable_frame_.empty())
         {
-            printf("Frame retrieved for SHM: %dx%d@%dch, type=%d\n", 
-                   reusable_frame_.cols, reusable_frame_.rows, 
-                   reusable_frame_.channels(), reusable_frame_.type());
             auto now = std::chrono::steady_clock::now();
             uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
                               now.time_since_epoch()).count();
@@ -403,14 +396,13 @@ void StreamTask::stepCompute()
             {
                 frame_ready = true;
                 // 可选：更新统计信息
-                spdlog::info("SHM frame written: {}x{}@{}ch, size={}B", 
-                              reusable_frame_.cols, reusable_frame_.rows,
-                              reusable_frame_.channels(), 
-                              reusable_frame_.total() * reusable_frame_.elemSize());
+                // spdlog::info("SHM frame written: {}x{}@{}ch, size={}B", 
+                //               reusable_frame_.cols, reusable_frame_.rows,
+                //               reusable_frame_.channels(), 
+                //               reusable_frame_.total() * reusable_frame_.elemSize());
             }
         }
     }
-    // === 分支 2: 传统模式 -> 编码为 JPEG 字符串 ===
     else
     {
         auto encode_buffer = frame_pool_->acquire();

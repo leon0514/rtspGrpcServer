@@ -32,7 +32,15 @@ NvjpegEncoder::NvjpegEncoder(int quality, int gpu_id) : quality_(quality), gpu_i
 
 NvjpegEncoder::~NvjpegEncoder()
 {
-    cleanup();
+    try
+    {
+        cleanup();
+    }
+    catch (...)
+    {
+        // 析构函数中绝不能抛出异常，否则会导致 std::terminate
+        // 静默忽略所有清理错误（通常是 CUDA runtime 已卸载）
+    }
 }
 
 bool NvjpegEncoder::initialize()
@@ -88,6 +96,20 @@ bool NvjpegEncoder::initialize()
 
 void NvjpegEncoder::cleanup()
 {
+    // 防御性检查：如果 CUDA runtime 正在卸载，跳过所有 CUDA/NVJPEG 清理
+    // 避免在程序退出时因静态析构顺序问题而崩溃
+    cudaError_t err = cudaSetDevice(gpu_id_);
+    if (err == cudaErrorCudartUnloading)
+    {
+        d_input_ = nullptr;
+        stream_ = nullptr;
+        encoder_params_ = nullptr;
+        encoder_state_ = nullptr;
+        nvjpeg_handle_ = nullptr;
+        initialized_ = false;
+        return;
+    }
+
     CUDATools::AutoDevice auto_device_exchange(gpu_id_);
     if (d_input_)
     {
