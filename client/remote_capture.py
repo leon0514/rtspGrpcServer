@@ -11,7 +11,7 @@ from typing import Optional, List, Dict, Generator, Tuple
 
 import stream_service_pb2
 import stream_service_pb2_grpc
-from turbojpeg import TurboJPEG
+import turbojpeg
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -74,7 +74,7 @@ class RemoteCapture:
         self.channel: Optional[grpc.Channel] = None
         self.stub: Optional[stream_service_pb2_grpc.RTSPStreamServiceStub] = None
 
-        # self.jpeg_decoder = TurboJPEG()
+        # 使用系统已安装的 turbojpeg Cython 扩展
 
     def _decode_jpeg(self, jpeg_data: bytes) -> Optional[np.ndarray]:
         """
@@ -84,11 +84,8 @@ class RemoteCapture:
             return None
         try:
             # 直接解码为 BGR 格式，与 OpenCV 的 cv2.imdecode 输出一致
-            img = self.jpeg_decoder.decode(
-                jpeg_data,
-                pixel_format=TJPF_BGR
-            )
-            return img
+            img = turbojpeg.decompress(jpeg_data, pixelformat=turbojpeg.BGR)
+            return np.array(img)
         except Exception as e:
             logging.error(f"TurboJPEG 解码失败: {e}")
             # 可选的降级方案：回退到 cv2.imdecode

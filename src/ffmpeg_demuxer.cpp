@@ -33,7 +33,7 @@ namespace FFHDDemuxer
 
 #define checkFFMPEG(call) check_ffmpeg_retvalue(call, #call, __LINE__, __FILE__)
 
-    // 判断字符串开头工具函数
+    // 判断字符串开头工具函数（大小写敏感）
     static bool string_begin_with(const string &str, const string &with)
     {
         if (str.size() < with.size())
@@ -41,6 +41,21 @@ namespace FFHDDemuxer
         if (with.empty())
             return true;
         return memcmp(str.c_str(), with.c_str(), with.size()) == 0;
+    }
+
+    // 判断字符串开头工具函数（大小写不敏感）
+    static bool string_begin_with_ci(const string &str, const string &with)
+    {
+        if (str.size() < with.size())
+            return false;
+        if (with.empty())
+            return true;
+        for (size_t i = 0; i < with.size(); ++i)
+        {
+            if (tolower(str[i]) != tolower(with[i]))
+                return false;
+        }
+        return true;
     }
 
     class FFmpegDemuxerImpl : public FFmpegDemuxer
@@ -431,20 +446,20 @@ namespace FFHDDemuxer
         AVFormatContext *CreateFormatContext(const string &uri)
         {
             AVDictionary *options = nullptr;
-            if (string_begin_with(uri, "rtsp://"))
+            if (string_begin_with_ci(uri, "rtsp://"))
             {
                 av_dict_set(&options, "rtsp_transport", "tcp", 0);
                 av_dict_set(&options, "buffer_size", "10485760", 0); // 10MB 底层网络防抖缓存
-                av_dict_set(&options, "stimeout", "3000000", 0);     // 3秒超时
+                av_dict_set(&options, "stimeout", "10000000", 0);     // 10秒超时 (单位: 微秒)
 
-                // 【权衡后的探测参数】
-                // 1MB - 2MB 是高清 HEVC 的安全线，足以容纳一个最大关键帧，又不会导致退流时残留太多
-                av_dict_set(&options, "probesize", "2048000", 0);
-                av_dict_set(&options, "analyzeduration", "2000000", 0); // 最多探测 2 秒
+                // 【探测参数】
+                // 5MB - 足够容纳高清 HEVC 的大关键帧，提高兼容性
+                av_dict_set(&options, "probesize", "5242880", 0);
+                av_dict_set(&options, "analyzeduration", "10000000", 0); // 最多探测 10 秒
                 // 减少分析过程中的多余丢包等待
-                av_dict_set(&options, "flags", "low_delay", 0);
-                // 如果你只需要视频不要音频，直接告诉 FFmpeg 别去花时间找音频流了
-                av_dict_set(&options, "allowed_media_types", "video", 0);
+                // av_dict_set(&options, "flags", "low_delay", 0);
+                // // 如果你只需要视频不要音频，直接告诉 FFmpeg 别去花时间找音频流了
+                // av_dict_set(&options, "allowed_media_types", "video", 0);
             }
 
             AVFormatContext *ctx = nullptr;
@@ -457,7 +472,9 @@ namespace FFHDDemuxer
 
             if (ret < 0)
             {
-                INFOE("FFmpeg avformat_open_input failed");
+                char errbuf[256] = {0};
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                INFOE("FFmpeg avformat_open_input failed for '%s': [%d] %s", uri.c_str(), ret, errbuf);
                 if (ctx)
                 {
                     avformat_free_context(ctx);

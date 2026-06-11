@@ -33,7 +33,18 @@ public:
                     }
                     // 这样通过 std::bind 创建的 task 对象实际上是一个可调用对象。
                     // 当你调用 task() 时，它会使用绑定的 f 和 args... 来执行原始的函数或 Lambda 表达式。
-                    task();
+                    try
+                    {
+                        task();
+                    }
+                    catch (const std::exception &e)
+                    {
+                        std::cerr << "[ThreadPool] Task exception: " << e.what() << std::endl;
+                    }
+                    catch (...)
+                    {
+                        std::cerr << "[ThreadPool] Unknown task exception" << std::endl;
+                    }
                 } });
         }
     }

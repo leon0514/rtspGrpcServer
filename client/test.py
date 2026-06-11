@@ -10,7 +10,7 @@ from remote_capture import (
     STATUS_NOT_FOUND
 )
 
-SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50052")
+SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50051")
 # 请替换为你实际可用的 RTSP 地址
 RTSP_URL = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/1001"
 
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     input("\n准备好后，按回车键开始测试...")
 
     # 运行串行测试（强烈建议先跑这个，观察内存是否封顶）
-    test_sequential_open_close(iterations=300, frames_per_iter=50)
+    # test_sequential_open_close(iterations=300, frames_per_iter=50)
     
     # 如果串行测试通过（内存涨到一定程度不涨了），再跑并发测试
-    # test_concurrent_stress(concurrent_num=4, iterations=5, read_seconds=5)
+    test_concurrent_stress(concurrent_num=4, iterations=5, read_seconds=5)

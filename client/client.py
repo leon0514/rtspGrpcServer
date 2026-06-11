@@ -55,7 +55,7 @@ def example_poll_frame():
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=True)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0, only_key_frames=False)
         if not stream_id:
             return
         
@@ -80,8 +80,8 @@ def example_poll_frame():
             frame_seq, frame = client.read(stream_id)
             if frame_seq != -1:
                 print(f"获取帧成功, 序列号: {frame_seq}")
-                cv2.imwrite("capture.jpg", frame)
-                break
+                # cv2.imwrite("capture.jpg", frame)
+                # break
             else:
                 status = client.get_stream_status(stream_id)
                 if status == STATUS_DISCONNECTED or status == STATUS_NOT_FOUND:
@@ -101,7 +101,7 @@ def example_stream_frames(rtsp_url):
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(rtsp_url, decoder_type=DECODER_GPU_NVCUVID, gpu_id=0, only_key_frames=True)
+        stream_id = client.start_stream(rtsp_url, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0, only_key_frames=False)
         # stream_id = "50fdcc9dd42e15f7"
         if not stream_id:
             return
@@ -147,8 +147,8 @@ def example_stream_frames(rtsp_url):
 if __name__ == "__main__":
     # 运行示例 (取消注释需要运行的示例)
     
-    example_list_streams()
-    # example_poll_frame()
+    # example_list_streams()
+    example_poll_frame()
     rtsp_list = ["rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101",
         "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/201",
         "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/301",
@@ -167,10 +167,10 @@ if __name__ == "__main__":
     # 使用线程来测试
     threads = []
 
-    for rtsp_url in rtsp_list:
-        t = threading.Thread(target=example_stream_frames, args=(rtsp_url,))
-        t.start()
-        threads.append(t)
+    # for rtsp_url in rtsp_list:
+    #     t = threading.Thread(target=example_stream_frames, args=(rtsp_url,))
+    #     t.start()
+    #     threads.append(t)
     
     # 等待所有线程完成
     for t in threads:

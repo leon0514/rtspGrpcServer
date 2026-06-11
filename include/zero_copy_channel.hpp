@@ -56,13 +56,47 @@ public:
         if (role_ == 0)
         {
             shm_fd_ = shm_open(shm_path.c_str(), O_CREAT | O_RDWR, 0666);
-            ftruncate(shm_fd_, total_size);
+            if (shm_fd_ < 0)
+            {
+                throw std::runtime_error("shm_open failed for " + shm_path + ": " + std::to_string(errno));
+            }
+            if (ftruncate(shm_fd_, total_size) < 0)
+            {
+                close(shm_fd_);
+                shm_fd_ = -1;
+                shm_unlink(shm_path.c_str());
+                throw std::runtime_error("ftruncate failed for " + shm_path + ": " + std::to_string(errno));
+            }
             layout_ = (ShmLayout *)mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_, 0);
         }
         else
         {
             shm_fd_ = shm_open(shm_path.c_str(), O_RDONLY, 0666);
+            if (shm_fd_ < 0)
+            {
+                throw std::runtime_error("shm_open (consumer) failed for " + shm_path + ": " + std::to_string(errno));
+            }
             layout_ = (ShmLayout *)mmap(nullptr, total_size, PROT_READ, MAP_SHARED, shm_fd_, 0);
+        }
+
+        if (layout_ == MAP_FAILED || layout_ == nullptr)
+        {
+            if (shm_fd_ >= 0)
+            {
+                close(shm_fd_);
+                shm_fd_ = -1;
+            }
+            if (role_ == 0)
+            {
+                shm_unlink(shm_path.c_str());
+            }
+            throw std::runtime_error("mmap failed for " + shm_path + ": " + std::to_string(errno));
+        }
+
+        // 初始化共享内存（生产者负责清零，避免消费者读到脏数据）
+        if (role_ == 0)
+        {
+            std::memset(layout_, 0, total_size);
         }
 
         // 创建/打开跨进程通知信号量（只有生产者需要创建）

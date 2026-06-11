@@ -41,7 +41,8 @@ class ShmStreamReader:
         self.ALIGNMENT = 64
         self.UINT64_SIZE = 8
         self.UINT32_SIZE = 4
-        self.MAX_SHM_FRAME_SIZE = 3 * 1024 * 1024
+        # 必须与 C++ 端 zero_copy_channel.hpp 中的 MAX_SHM_FRAME_SIZE 保持一致
+        self.MAX_SHM_FRAME_SIZE = 6 * 2560 * 1440
         self.SLOT_COUNT = 8
         
         # --- 2. 计算 ShmMeta 布局 (新增 4 个 uint32 字段) ---

@@ -40,6 +40,18 @@ pkg_check_modules(SPDLOG REQUIRED spdlog)
 # 查找 FFmpeg 组件
 pkg_check_modules(FFMPEG REQUIRED libavcodec libavformat libavutil libswscale)
 
+find_library(TURBOJPEG_LIBRARY
+    NAMES turbojpeg
+    PATHS /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib
+)
+
+if(NOT TURBOJPEG_LIBRARY)
+    message(WARNING "turbojpeg library NOT found during build time. Ensure libturbojpeg0-dev is installed!")
+    set(TURBOJPEG_LIBRARY "")
+else()
+    message(STATUS "Found turbojpeg: ${TURBOJPEG_LIBRARY}")
+endif()
+
 find_library(NVCUVID_LIBRARY 
     NAMES nvcuvid 
     PATHS /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu
@@ -105,6 +117,7 @@ set(SRC_FILES
     src/ffmpeg_decoder.cpp
     src/nvjpeg_encoder.cpp   # GPU JPEG 编码器
     src/opencv_encoder.cpp
+    src/turbojpeg_encoder.cpp
     src/ffmpeg_demuxer.cpp
     src/cuda_tools.cpp
     src/cuvid_decoder.cpp
@@ -144,4 +157,5 @@ target_link_libraries(rtsp_server
     protobuf::libprotobuf 
     grpc++_reflection
     ${JEMALLOC_LIBRARIES}
+    ${TURBOJPEG_LIBRARY}
 )

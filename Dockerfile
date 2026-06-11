@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     libavutil-dev \
     libswscale-dev \
     libjemalloc-dev \
+    libturbojpeg0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. 配置 nvcuvid 软链接 (确保运行时能找到驱动库)

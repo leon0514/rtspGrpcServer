@@ -24,10 +24,10 @@ public:
             return *cpu_compute_pool_;
         }
 
-        // 防止越界
+        // 防止越界：如果系统没有检测到 GPU（或 GPU 数量为空），直接回退到 CPU 池
         if (gpu_id >= static_cast<int>(gpu_compute_pools_.size()))
         {
-            spdlog::warn("Request gpu_id {} exceeds detected count {}, fallback to CPU.", gpu_id, gpu_compute_pools_.size());
+            spdlog::warn("Request gpu_id {} exceeds detected count {} (or no GPU available), fallback to CPU.", gpu_id, gpu_compute_pools_.size());
             return *cpu_compute_pool_;
         }
 

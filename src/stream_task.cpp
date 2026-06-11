@@ -2,6 +2,7 @@
 #include "task_scheduler.hpp"
 #include "nvjpeg_encoder.hpp"
 #include "opencv_encoder.hpp"
+#include "turbojpeg_encoder.hpp"
 #include "cuda_decoder.hpp"
 #include <chrono>
 #include <thread>
@@ -37,7 +38,7 @@ namespace {
         }
         else
         {
-            encoder = std::make_shared<OpencvEncoder>(quality);
+            encoder = std::make_shared<TurboJpegEncoder>(quality);
         }
         encoders.emplace(key, encoder);
         return encoder;
@@ -115,9 +116,13 @@ StreamTask::StreamTask(const std::string &url,
 StreamTask::~StreamTask()
 {
     spdlog::warn("==== ~StreamTask DESTROYED: {} ====", url_);
-    running_ = false;
     
-    // 2. 必须强制 join，确保线程不再访问此对象的成员
+    // 1. 停止 IO 线程
+    running_ = false;
+    {
+        std::unique_lock<std::mutex> sleep_lock(sleep_mutex_);
+        sleep_cv_.notify_all();
+    }
     if (io_thread_.joinable()) 
     {
         // 如果当前线程就是 io_thread_ 自己，这里会死锁，所以要判断
@@ -126,7 +131,23 @@ StreamTask::~StreamTask()
             io_thread_.join();
         } 
     }
-    stop();
+    
+    // 2. 析构时必须显式清理 SHM（即使 stop() 已经被调用过，cleanup() 是幂等的）
+    if (shm_channel_)
+    {
+        shm_channel_->cleanup();
+        shm_channel_.reset();
+    }
+    
+    // 3. 释放 decoder
+    {
+        std::lock_guard<std::mutex> lock(decoder_mutex_);
+        if (decoder_)
+        {
+            decoder_->release();
+        }
+    }
+    
     if (cuda_stream_)
     {
         CUDATools::AutoDevice auto_device_exchange(gpu_id_);
@@ -269,7 +290,11 @@ void StreamTask::scheduleNext(int force_delay_ms)
 void StreamTask::stepIO()
 {
     if (!running_)
+    {
+        spdlog::info("IO step skipped (not running): {}", url_);
         return;
+    }
+        
 
     std::unique_lock<std::mutex> lock(decoder_mutex_);
 
@@ -285,7 +310,11 @@ void StreamTask::stepIO()
     }
 
     if (!decoder_)
+    {
+        spdlog::error("Decoder not initialized for stream: {}", url_);
         return;
+    }
+        
 
     // 1. 处理连接断开重连逻辑
     if (!decoder_->isOpened())
@@ -319,6 +348,7 @@ void StreamTask::stepIO()
         }
         else
         {
+            spdlog::warn("Connection attempt failed: {}", url_);
             lock.unlock();
             // 连接失败，使用定时器延迟 1000ms 后再次触发，不阻塞线程池！
             scheduleNext(1000);
@@ -359,17 +389,26 @@ void StreamTask::stepIO()
         }
     }
 
+    spdlog::debug("[stepIO] should_process={}, interval_ms={}, gpu_id={}, use_shm={}",
+                   should_process, decode_interval_ms_, gpu_id_, use_shared_mem_);
+
     if (should_process)
     {
         // 需要解码：释放锁，将任务派发给计算线程池
         lock.unlock();
+        spdlog::debug("[stepIO] Enqueueing stepCompute to pool gpu_id={}", gpu_id_);
         std::weak_ptr<StreamTask> weak_self = shared_from_this();
         TaskScheduler::instance().getComputePool(gpu_id_).enqueue(
             [weak_self]()
             {
                 if (auto self = weak_self.lock())
                 {
+                    spdlog::debug("[stepCompute] Executing for {}", self->url_);
                     self->stepCompute();
+                }
+                else
+                {
+                    spdlog::warn("[stepCompute] weak_ptr expired, task destroyed before compute");
                 }
             });
     }
@@ -391,8 +430,14 @@ void StreamTask::stepCompute()
     auto compute_start = std::chrono::steady_clock::now();
     auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_start - last_grab_end_).count();
 
+    // spdlog::debug("[stepCompute] Entered for {}, running={}, gpu_id={}", url_, running_.load(), gpu_id_);
+
     if (!running_)
+    {
+        spdlog::info("Compute step skipped (not running): {}", url_);
         return;
+    }
+        
     if (gpu_id_ >= 0)
     {
         CUDATools::AutoDevice auto_device_exchange(gpu_id_);
@@ -401,6 +446,7 @@ void StreamTask::stepCompute()
     std::unique_lock<std::mutex> lock(decoder_mutex_);
     if (!decoder_ || !decoder_->isOpened())
     {
+        spdlog::warn("Decoder not ready in compute step, skipping: {}", url_);
         lock.unlock();
         scheduleNext(0);
         return;
@@ -415,6 +461,8 @@ void StreamTask::stepCompute()
         // 客户端应通过 gRPC CheckStream / isOpened() 来维持心跳
         // 直接获取解码后的 Mat (GPU/CPU 自适应)
         bool retrieved = decoder_->retrieve(reusable_frame_, true);
+        // spdlog::info("SHM retrieve frame: {}, retrieved={}, size={}B", url_, retrieved, 
+        //               reusable_frame_.empty() ? 0 : (reusable_frame_.total() * reusable_frame_.elemSize()));
         if (retrieved && !reusable_frame_.empty())
         {
             auto now = std::chrono::steady_clock::now();
