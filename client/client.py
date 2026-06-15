@@ -93,7 +93,7 @@ def example_poll_frame():
         print("流已停止")
 
 
-def example_stream_frames(rtsp_url):
+def example_stream_frames():
     """示例3: 流式传输获取帧"""
     print("=" * 50)
     print("示例3: 流式传输获取帧")
@@ -101,7 +101,7 @@ def example_stream_frames(rtsp_url):
     
     with RemoteCapture(SERVER) as client:
         # 启动流
-        stream_id = client.start_stream(rtsp_url, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0, only_key_frames=False)
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG, gpu_id=0, only_key_frames=True)
         # stream_id = "50fdcc9dd42e15f7"
         if not stream_id:
             return
@@ -125,10 +125,10 @@ def example_stream_frames(rtsp_url):
 
         start = time.time()
         
-        for seq, frame in client.stream_frames(stream_id, max_fps=25):
+        for seq, frame in client.stream_frames(stream_id, max_fps=-1):
             if seq != -1:
-                print(f"接收帧: {seq}")
-                time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                print(f"获取帧成功, 时间戳: {seq}")
+                time_stamp = datetime.datetime.fromtimestamp(seq / 1000).strftime("%Y%m%d_%H%M%S_%f")[:-3]
                 cv2.imwrite(f"images/{stream_id}/{time_stamp}.jpg", frame)
             else:
                 status = client.get_stream_status(stream_id)
@@ -148,7 +148,8 @@ if __name__ == "__main__":
     # 运行示例 (取消注释需要运行的示例)
     
     # example_list_streams()
-    example_poll_frame()
+    # example_poll_frame()
+    example_stream_frames()
     rtsp_list = ["rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101",
         "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/201",
         "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/301",

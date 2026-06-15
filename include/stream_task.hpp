@@ -70,7 +70,7 @@ public:
     bool isTimeout();
 
     void updateUrl(const std::string &new_url);
-    int getFrameSequence() const { return frame_seq_.load(); }
+    int64_t getFrameSequence() const { return static_cast<int64_t>(frame_seq_.load()); }
 
 private:
     void updateHeartbeat();
@@ -144,6 +144,7 @@ private:
     std::condition_variable sleep_cv_;
 
     std::atomic<uint64_t> frame_seq_{0};
+    uint64_t last_grab_timestamp_ms_ = 0;
 
     // 用于 CPU 路径的图像缓存，避免反复分配 cv::Mat
     cv::Mat reusable_frame_;

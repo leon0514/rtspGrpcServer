@@ -1,5 +1,8 @@
 services:
   grpc_rtsp:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: grpc_rtsp_server
     container_name: grpc_rtsp_server
     runtime: nvidia
@@ -10,10 +13,11 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['1']
+              count: all
               capabilities: [gpu]
     environment:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - NVIDIA_VISIBLE_DEVICES=all
     ports:
       - "50051:50051"
     stdin_open: true

@@ -65,7 +65,7 @@ message FrameResponse {
     bool success = 1;
     bytes image_data = 2;
     string message = 3;
-    int32 frame_seq = 4;
+    int64 frame_seq = 4;
 }
 
 // 查询所有流请求

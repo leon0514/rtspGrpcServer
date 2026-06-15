@@ -375,6 +375,11 @@ void StreamTask::stepIO()
     reconnect_attempts_ = 0;
     last_grab_end_ = grab_end;
 
+    // 记录帧到达服务端的时间戳（在 grab 成功时立即记录，比编码完成时间更准确）
+    auto sys_now = std::chrono::system_clock::now();
+    last_grab_timestamp_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+        sys_now.time_since_epoch()).count();
+
     // 3. 抽帧逻辑判断 (Frame dropping)
     bool should_process = true;
     int64_t decode_interval_us = decode_interval_ms_ * 1000LL;
@@ -465,12 +470,8 @@ void StreamTask::stepCompute()
         //               reusable_frame_.empty() ? 0 : (reusable_frame_.total() * reusable_frame_.elemSize()));
         if (retrieved && !reusable_frame_.empty())
         {
-            auto now = std::chrono::steady_clock::now();
-            uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              now.time_since_epoch()).count();
-            
-            // 写入共享内存（跳过编码！）
-            if (shm_channel_->write_frame_mat(reusable_frame_, ts))
+            // 使用 grab 时记录的时间戳，与 gRPC 路径保持一致
+            if (shm_channel_->write_frame_mat(reusable_frame_, last_grab_timestamp_ms_))
             {
                 frame_ready = true;
                 // 可选：更新统计信息
@@ -524,7 +525,9 @@ void StreamTask::stepCompute()
                 prev_frame = std::move(latest_encoded_frame_);
                 latest_encoded_frame_ = encode_buffer;
                 last_encode_time_ = std::chrono::steady_clock::now();
-                frame_seq_.fetch_add(1, std::memory_order_release);
+                // 使用 grab 时记录的时间戳，而非编码完成时间
+                // 这样即使只解码关键帧（间隔几秒）或线程池排队，时间戳仍反映帧到达时刻
+                frame_seq_.store(last_grab_timestamp_ms_, std::memory_order_release);
             }
             frame_cv_.notify_all();
         }

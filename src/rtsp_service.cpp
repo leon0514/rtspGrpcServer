@@ -418,9 +418,9 @@ void RTSPServiceImpl::cleanupLoop()
         }
         // 🔧 强制命令 jemalloc 立即进行内存收缩 (Purge)
         // 这会告诉 jemalloc：把我所有 Dirty 页面全部交还给 OS
-#ifdef __linux__
-        mallctl("arena.0.purge", NULL, NULL, NULL, 0);
-#endif
+// #ifdef __linux__
+//         mallctl("arena.0.purge", NULL, NULL, NULL, 0);
+// #endif
     }
 }
 
