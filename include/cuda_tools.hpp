@@ -7,6 +7,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <cstdlib>
 #include "simple-logger.hpp"
 
 #define GPU_BLOCK_THREADS 512
@@ -37,6 +38,7 @@
         if (!cond)                        \
         {                                 \
             INFOF("Assert failed, " #op); \
+            std::abort();                 \
         }                                 \
     } while (false)
 
@@ -67,6 +69,7 @@ namespace CUDATools
 
     private:
         int old_ = -1;
+        bool has_old_ = false;
     };
 }
 

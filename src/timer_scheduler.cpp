@@ -21,8 +21,11 @@ void TimerScheduler::start()
 
 void TimerScheduler::stop()
 {
-    if (!running_.exchange(false))
-        return;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_.exchange(false))
+            return;
+    }
     cv_.notify_one();
     if (worker_.joinable())
         worker_.join();
@@ -45,7 +48,8 @@ void TimerScheduler::runLoop()
         std::unique_lock<std::mutex> lock(mutex_);
         if (tasks_.empty())
         {
-            cv_.wait(lock);
+            // 使用谓词等待，避免虚假唤醒或丢失唤醒导致长时间阻塞
+            cv_.wait(lock, [this]{ return !tasks_.empty() || !running_; });
             continue;
         }
 
@@ -62,16 +66,27 @@ void TimerScheduler::runLoop()
             }
             lock.unlock();
 
-            // 直接在 TimerScheduler 线程上执行到期任务
+            // 直接在 TimerScheduler 线程上执行到期任务，并捕获异常避免线程退出
             for (auto &t : ready)
             {
-                t();
+                try
+                {
+                    t();
+                }
+                catch (const std::exception &e)
+                {
+                    spdlog::error("[TimerScheduler] Task exception: {}", e.what());
+                }
+                catch (...)
+                {
+                    spdlog::error("[TimerScheduler] Unknown task exception");
+                }
             }
         }
         else
         {
-            // 等待到下一个任务的到期时间
-            cv_.wait_until(lock, it->first);
+            // 等待到下一个任务的到期时间，使用谓词以便被 stop() 唤醒
+            cv_.wait_until(lock, it->first, [this]{ return !tasks_.empty() && tasks_.begin()->first <= Clock::now() || !running_; });
         }
     }
 }

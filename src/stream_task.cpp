@@ -69,7 +69,7 @@ StreamTask::StreamTask(const std::string &url,
       jpeg_quality_(jpeg_quality)
 {
     // 初始化内存池
-    frame_pool_ = std::make_shared<FrameMemoryPool>(3 * 1024 * 1024);
+    frame_pool_ = FrameMemoryPool::create(3 * 1024 * 1024);
     updateHeartbeat();
     last_encode_time_ = std::chrono::steady_clock::now();
 

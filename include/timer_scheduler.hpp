@@ -23,7 +23,7 @@ public:
     void stop();
 
     // 延迟 delay_ms 毫秒后执行 task
-    // task 将在 IO 线程池中执行（通过 TaskScheduler）
+    // task 将在 TimerScheduler 自己的线程中直接执行
     void schedule(int delay_ms, Task task);
 
 private:

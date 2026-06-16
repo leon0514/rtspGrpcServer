@@ -15,12 +15,18 @@ public:
         return instance;
     }
 
-    // 【修改点】获取特定 GPU 的线程池 (懒加载模式)
+    // 获取特定 GPU 的线程池
     ThreadPool &getComputePool(int gpu_id = -1)
     {
+        std::lock_guard<std::mutex> lock(mutex_);
+
         // 如果是 CPU 任务
         if (gpu_id < 0)
         {
+            if (!cpu_compute_pool_)
+            {
+                throw std::runtime_error("TaskScheduler::getComputePool: CPU compute pool is not initialized");
+            }
             return *cpu_compute_pool_;
         }
 
@@ -28,48 +34,51 @@ public:
         if (gpu_id >= static_cast<int>(gpu_compute_pools_.size()))
         {
             spdlog::warn("Request gpu_id {} exceeds detected count {} (or no GPU available), fallback to CPU.", gpu_id, gpu_compute_pools_.size());
+            if (!cpu_compute_pool_)
+            {
+                throw std::runtime_error("TaskScheduler::getComputePool: CPU compute pool is not initialized");
+            }
             return *cpu_compute_pool_;
         }
 
-        // 【核心修改】双重检查锁定 (Double-Checked Locking) 实现懒加载
-        if (!gpu_compute_pools_[gpu_id])
-        {
-            std::lock_guard<std::mutex> lock(init_mutex_);
-            if (!gpu_compute_pools_[gpu_id])
-            {
-                spdlog::info("Lazy initializing ThreadPool for GPU {}...", gpu_id);
-                // 只有真的用到了这张卡，才创建线程池！
-                gpu_compute_pools_[gpu_id] = std::make_unique<ThreadPool>(threads_per_gpu_);
-            }
-        }
         return *gpu_compute_pools_[gpu_id];
     }
 
-    // 初始化：不再创建全局 IO 线程池，只有计算线程池
+    // 初始化：创建 CPU 计算线程池，并为每个检测到的 GPU 创建对应的计算线程池
     void init(size_t compute_threads_per_gpu, size_t cpu_compute_threads)
     {
-        cpu_compute_pool_ = std::make_unique<ThreadPool>(cpu_compute_threads);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (initialized_)
+        {
+            spdlog::warn("TaskScheduler::init called more than once, ignoring.");
+            return;
+        }
 
-        threads_per_gpu_ = compute_threads_per_gpu; // 记下来，以后用
+        cpu_compute_pool_ = std::make_unique<ThreadPool>(cpu_compute_threads);
 
         int gpu_count = 0;
         cudaGetDeviceCount(&gpu_count);
         if (gpu_count > 0)
         {
-            // 只是把 vector 的大小扩充好，填入 nullptr，不创建实际对象！
-            gpu_compute_pools_.resize(gpu_count);
+            gpu_compute_pools_.reserve(gpu_count);
+            for (int i = 0; i < gpu_count; ++i)
+            {
+                gpu_compute_pools_.emplace_back(std::make_unique<ThreadPool>(compute_threads_per_gpu));
+            }
         }
 
-        spdlog::info("TaskScheduler initialized. GPUs detected: {} (Lazy Loading enabled)", gpu_count);
+        initialized_ = true;
+        spdlog::info("TaskScheduler initialized. GPUs detected: {}", gpu_count);
     }
 
     // 程序退出前调用：显式销毁所有线程池，确保 thread_local CUDA 资源
     // 在 CUDA runtime 静态卸载之前被释放，避免崩溃
     void shutdown()
     {
-        std::lock_guard<std::mutex> lock(init_mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         gpu_compute_pools_.clear();
         cpu_compute_pool_.reset();
+        initialized_ = false;
         spdlog::info("TaskScheduler shutdown complete.");
     }
 
@@ -77,10 +86,8 @@ private:
     TaskScheduler() = default;
 
     std::unique_ptr<ThreadPool> cpu_compute_pool_;
-
-    // 改为 vector 存放 unique_ptr，初始为空
     std::vector<std::unique_ptr<ThreadPool>> gpu_compute_pools_;
 
-    std::mutex init_mutex_; // 用于懒加载的锁
-    size_t threads_per_gpu_ = 2;
+    std::mutex mutex_;
+    bool initialized_ = false;
 };

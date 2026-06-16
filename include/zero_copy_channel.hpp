@@ -3,6 +3,8 @@
 #include <iostream>
 #include <atomic>
 #include <string>
+#include <stdexcept>
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -10,8 +12,10 @@
 #include <cstring>
 #include <semaphore.h>
 #include <spdlog/spdlog.h>
+#include <opencv2/opencv.hpp>
 
-constexpr size_t MAX_SHM_FRAME_SIZE = 6  * 2560 * 1440; // 3MB
+// 6 * 2560 * 1440 ≈ 21 MB，足以容纳一帧较大尺寸的 BGR 图像
+constexpr size_t MAX_SHM_FRAME_SIZE = 6 * 2560 * 1440;
 constexpr int SHM_SLOT_COUNT = 8;
 
 struct alignas(64) ShmMeta
@@ -35,7 +39,7 @@ struct alignas(64) ShmFrameSlot
     uint8_t payload[MAX_SHM_FRAME_SIZE]; // 变长数据存放区
 };
 
-// 8 + 32 + 3*1024*1024 = 3145728 bytes per slot
+// 8 + 32 + 6 * 2560 * 1440 ≈ 21 MB per slot
 
 struct ShmLayout
 {
@@ -55,7 +59,10 @@ public:
 
         if (role_ == 0)
         {
+            // 临时清除 umask，确保共享内存文件权限真正为 0666（跨用户/容器访问）
+            auto old_umask = umask(0);
             shm_fd_ = shm_open(shm_path.c_str(), O_CREAT | O_RDWR, 0666);
+            umask(old_umask);
             if (shm_fd_ < 0)
             {
                 throw std::runtime_error("shm_open failed for " + shm_path + ": " + std::to_string(errno));
@@ -131,21 +138,14 @@ public:
 
     ~ZeroCopyChannel()
     {
-        if (layout_)
-            munmap(layout_, sizeof(ShmLayout));
-        if (shm_fd_ >= 0)
-            close(shm_fd_);
-        if (notify_sem_)
-        {
-            sem_close(notify_sem_);
-            if (role_ == 0)
-            {
-                sem_unlink(("/" + stream_id_ + "_notify").c_str());
-                spdlog::info("[ZeroCopyChannel] Notify semaphore cleaned up: /{}_notify", stream_id_);
-            }
-            notify_sem_ = nullptr;
-        }
+        cleanup();
     }
+
+    // 禁止拷贝和移动，防止 double-close / double-munmap
+    ZeroCopyChannel(const ZeroCopyChannel&) = delete;
+    ZeroCopyChannel& operator=(const ZeroCopyChannel&) = delete;
+    ZeroCopyChannel(ZeroCopyChannel&&) = delete;
+    ZeroCopyChannel& operator=(ZeroCopyChannel&&) = delete;
 
     bool write_frame_mat(const cv::Mat& frame, uint64_t timestamp)
     {
@@ -176,7 +176,7 @@ public:
         ShmFrameSlot &slot = layout_->slots[idx];
         
         // 4. 标记开始写入 (sequence 奇数=写入中)
-        slot.sequence.fetch_add(1, std::memory_order_acquire);
+        slot.sequence.fetch_add(1, std::memory_order_release);
         
         // 5. 写入元数据
         slot.meta.actual_size = data_size;
@@ -219,9 +219,10 @@ public:
         ShmFrameSlot &slot = layout_->slots[idx];
 
         // 1. 标记开始写入
-        slot.sequence.fetch_add(1, std::memory_order_acquire);
+        slot.sequence.fetch_add(1, std::memory_order_release);
 
-        // 2. 写入元数据
+        // 2. 写入元数据（清零后再写，避免与 write_frame_mat 混用时残留脏数据）
+        slot.meta = {};
         slot.meta.actual_size = size;
         slot.meta.width = w;
         slot.meta.height = h;
@@ -258,14 +259,20 @@ public:
             close(shm_fd_);
             shm_fd_ = -1;
         }
-        // 关键步骤：从内核中删除该共享内存对象
-        shm_unlink(("/" + stream_id_).c_str());
-        // 删除通知信号量
+        // 只有生产者才有权限/义务从内核中删除共享内存对象
+        if (role_ == 0)
+        {
+            shm_unlink(("/" + stream_id_).c_str());
+        }
+        // 删除通知信号量（同样只有生产者创建，因此只由生产者删除）
         if (notify_sem_)
         {
             sem_close(notify_sem_);
-            sem_unlink(("/" + stream_id_ + "_notify").c_str());
-            spdlog::info("[ZeroCopyChannel] Notify semaphore cleaned up: /{}_notify", stream_id_);
+            if (role_ == 0)
+            {
+                sem_unlink(("/" + stream_id_ + "_notify").c_str());
+                spdlog::info("[ZeroCopyChannel] Notify semaphore cleaned up: /{}_notify", stream_id_);
+            }
             notify_sem_ = nullptr;
         }
     }

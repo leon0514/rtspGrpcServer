@@ -4,13 +4,13 @@ import sys
 import time
 from shm_capture import ShmCapture, DECODER_GPU_NVCUVID, DECODER_CPU_FFMPEG
 
-SERVER = "127.0.0.1:50052"
+SERVER = "127.0.0.1:50051"
 RTSP = "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/901"
 
 def main():
     with ShmCapture(SERVER) as cap:
         # 打开流（自动启用共享内存）
-        if not cap.open(RTSP, decoder_type=DECODER_CPU_FFMPEG, only_key_frames=False):
+        if not cap.open(RTSP, decoder_type=DECODER_GPU_NVCUVID, only_key_frames=False):
             print("✗ 打开失败")
             return 1
         print(f"✓ 已打开: {RTSP[:50]}...")

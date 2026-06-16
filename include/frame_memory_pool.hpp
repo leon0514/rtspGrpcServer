@@ -8,9 +8,11 @@
 class FrameMemoryPool : public std::enable_shared_from_this<FrameMemoryPool>
 {
 public:
-    // 默认预分配容量，建议设为足以容纳一帧最大 JPEG 的大小（例如 3MB）
-    explicit FrameMemoryPool(size_t default_capacity = 3 * 1024 * 1024)
-        : default_capacity_(default_capacity) {}
+    // 推荐通过工厂函数创建，避免在栈上构造后调用 acquire() 抛出 std::bad_weak_ptr
+    static std::shared_ptr<FrameMemoryPool> create(size_t default_capacity = 3 * 1024 * 1024)
+    {
+        return std::shared_ptr<FrameMemoryPool>(new FrameMemoryPool(default_capacity));
+    }
 
     ~FrameMemoryPool() = default;
 
@@ -43,15 +45,25 @@ public:
         // 返回带有自定义删除器的 shared_ptr
         return std::shared_ptr<std::string>(str.release(), [weak_pool](std::string *ptr)
                                             {
-            if (auto pool = weak_pool.lock()) {
-                pool->release(std::unique_ptr<std::string>(ptr));
-            } else {
-                // 如果内存池已经销毁（流已停止），则直接释放内存
-                delete ptr; 
+            try {
+                if (auto pool = weak_pool.lock()) {
+                    pool->release(std::unique_ptr<std::string>(ptr));
+                } else {
+                    // 如果内存池已经销毁（流已停止），则直接释放内存
+                    delete ptr;
+                }
+            } catch (...) {
+                // release() 可能抛异常（如 std::bad_alloc），在删除器中抛异常会导致 std::terminate
+                // 因此捕获所有异常并兜底释放内存
+                delete ptr;
             } });
     }
 
 private:
+    // 默认预分配容量，建议设为足以容纳一帧最大 JPEG 的大小（例如 3MB）
+    explicit FrameMemoryPool(size_t default_capacity = 3 * 1024 * 1024)
+        : default_capacity_(default_capacity) {}
+
     // 供自定义删除器回调使用
     void release(std::unique_ptr<std::string> str)
     {
