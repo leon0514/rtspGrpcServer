@@ -23,7 +23,7 @@ class ThreadPoolTask
     struct Base
     {
         virtual ~Base() = default;
-        virtual void call() const = 0;
+        virtual void call() = 0;
     };
 
     template <typename F>
@@ -31,7 +31,7 @@ class ThreadPoolTask
     {
         F f;
         explicit Impl(F &&f_) : f(std::move(f_)) {}
-        void call() const override { f(); }
+        void call() override { f(); }
     };
 
     std::unique_ptr<Base> impl_;
@@ -51,7 +51,7 @@ public:
     ThreadPoolTask(const ThreadPoolTask &) = delete;
     ThreadPoolTask &operator=(const ThreadPoolTask &) = delete;
 
-    void operator()() const
+    void operator()()
     {
         if (impl_)
             impl_->call();

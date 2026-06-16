@@ -44,17 +44,17 @@ docker run -itd \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
   --name grpc_rtsp_server \
   -p 50051:50051 \
-  --ipc=host \
+  -v /dev/shm:/dev/shm \
   --shm-size=2g \
   grpc_rtsp_server
 ```
 
 #### 核心参数原理解析：
-    --ipc=host （最关键）
-    作用：打破 Docker 的进程间通信（IPC）隔离，让容器直接使用宿主机的 /dev/shm 目录。
+    -v /dev/shm:/dev/shm （关键）
+    作用：把宿主机的 /dev/shm 目录挂载到容器内，使 POSIX 共享内存文件对宿主机可见。
     效果：C++ 在容器内调用 shm_open("/1732b0a8", ...)，宿主机的 /dev/shm/1732b0a8 会立刻出现这个文件。你的 Python 脚本（如果在宿主机运行）就能顺利 mmap 到它。
     --shm-size=2g
-    作用：将共享内存上限从可怜的 64MB 提高到 2GB（你可以根据摄像头数量自行调整，如 1g, 4g 等）。
+    作用：将容器内 /dev/shm 的上限从默认 64MB 提高到 2GB（你可以根据摄像头数量自行调整，如 1g, 4g 等）。
     效果：防止 C++ 服务端在多路并发解码时，调用 ftruncate 申请物理内存空间失败导致程序闪退。
 
 

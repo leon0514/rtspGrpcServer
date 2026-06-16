@@ -647,7 +647,7 @@ class RTSPClient(_BaseRTSPClient):
             if not reader.exists():
                 logger.error(
                     f"[RTSPClient] 共享内存已消失: /dev/shm/{stream_id}，"
-                    f"请确认客户端与服务端在同一主机且 --ipc=host 已开启"
+                    f"请确认客户端与服务端在同一主机且 Docker 挂载了 -v /dev/shm:/dev/shm"
                 )
                 return None
             return reader
@@ -656,7 +656,8 @@ class RTSPClient(_BaseRTSPClient):
         if not reader.exists():
             logger.error(
                 f"[RTSPClient] 未找到共享内存: /dev/shm/{stream_id}。"
-                f"可能原因：1) 客户端与服务端不在同一机器；2) 服务端 SHM 创建失败；3) 该流未启用共享内存。"
+                f"可能原因：1) 客户端与服务端不在同一机器；2) 服务端 SHM 创建失败；"
+                f"3) 该流未启用共享内存；4) Docker 未挂载 -v /dev/shm:/dev/shm。"
             )
             return None
 

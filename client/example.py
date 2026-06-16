@@ -226,7 +226,7 @@ def example_shared_memory(blocking: bool = True,
     """
     通过共享内存零拷贝读取原始帧
 
-    注意：客户端必须与服务端在同一台机器，且服务端容器启动时带 --ipc=host。
+    注意：客户端必须与服务端在同一台机器，且服务端容器启动时挂载 -v /dev/shm:/dev/shm。
     """
     print("\n" + "=" * 60)
     print(f"示例 4: 共享内存读帧 ({DECODER_NAMES.get(decoder_type, '?')})")

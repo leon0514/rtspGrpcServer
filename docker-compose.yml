@@ -6,8 +6,11 @@ services:
     image: grpc_rtsp_server
     container_name: grpc_rtsp_server
     runtime: nvidia
-    ipc: host
     shm_size: 2g
+    volumes:
+      # 不开启 ipc: host，改为仅挂载 /dev/shm 目录，
+      # 使同一宿主机上的 Python 客户端仍可访问 C++ 端创建的 POSIX 共享内存文件
+      - /dev/shm:/dev/shm
     deploy:
       resources:
         reservations:
