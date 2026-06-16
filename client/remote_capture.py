@@ -368,6 +368,47 @@ class _ShmReader:
         self._connected = False
 
 
+# ==================== gRPC 重试装饰器 ====================
+
+def _grpc_retry(default_return=None, max_retries: int = 5, backoff_sec: float = 1.0):
+    """
+    gRPC 调用重试装饰器
+
+    当捕获到 UNAVAILABLE（服务端重启、网络抖动等）时，自动关闭并重建连接后重试。
+    重试间隔按指数退避：backoff_sec * (2 ** attempt)。
+    注意：服务端重启后原有 stream_id 会失效，业务层需要根据返回状态重新 start_stream。
+    """
+    def decorator(func):
+        def wrapper(self, *args, **kwargs):
+            for attempt in range(max_retries + 1):
+                if not self._ensure_stub():
+                    return default_return
+                try:
+                    return func(self, *args, **kwargs)
+                except grpc.RpcError as e:
+                    code = e.code()
+                    if code == grpc.StatusCode.UNAVAILABLE and attempt < max_retries:
+                        sleep_time = backoff_sec * (2 ** attempt)
+                        logger.warning(
+                            f"[RTSPClient] gRPC UNAVAILABLE ({func.__name__}), "
+                            f"{sleep_time:.1f}s 后尝试重连 ({attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(sleep_time)
+                        if self.reconnect(max_retries=3, backoff_sec=1.0):
+                            continue
+                        else:
+                            logger.error(f"[RTSPClient] {func.__name__} 重连失败")
+                            return default_return
+                    logger.error(f"[RTSPClient] gRPC error in {func.__name__}: {e.details()}")
+                    return default_return
+                except Exception as e:
+                    logger.error(f"[RTSPClient] unexpected error in {func.__name__}: {e}")
+                    return default_return
+            return default_return
+        return wrapper
+    return decorator
+
+
 # ==================== gRPC 基类 ====================
 
 class _BaseRTSPClient:
@@ -398,6 +439,40 @@ class _BaseRTSPClient:
 
     def is_connected(self) -> bool:
         return self._stub is not None
+
+    def reconnect(self, max_retries: int = 3, backoff_sec: float = 1.0,
+                  ready_timeout_sec: float = 5.0) -> bool:
+        """
+        关闭当前连接并重新建立，用于服务端重启后恢复通信
+
+        :param max_retries: 最大重试次数
+        :param backoff_sec: 首次重试等待秒数，后续按指数退避
+        :param ready_timeout_sec: 等待 gRPC channel ready 的最大时间
+        """
+        logger.info("正在尝试重新连接服务器...")
+        for attempt in range(max_retries + 1):
+            try:
+                self.disconnect()
+                if not self.connect():
+                    raise RuntimeError("connect() returned False")
+
+                # 等待 channel 真正可用，避免服务端刚启动时立即调用失败
+                try:
+                    grpc.channel_ready_future(self._channel).result(timeout=ready_timeout_sec)
+                    logger.info("重新连接服务器成功")
+                    return True
+                except grpc.FutureTimeoutError:
+                    logger.warning(f"等待 gRPC channel ready 超时 ({ready_timeout_sec}s)")
+            except Exception as e:
+                logger.error(f"重新连接失败: {e}")
+
+            if attempt < max_retries:
+                sleep_time = backoff_sec * (2 ** attempt)
+                logger.warning(f"{sleep_time:.1f}s 后再次尝试重连 ({attempt + 1}/{max_retries})...")
+                time.sleep(sleep_time)
+
+        logger.error(f"重试 {max_retries} 次后仍未连接成功")
+        return False
 
     def _ensure_stub(self) -> bool:
         if self._stub is not None:
@@ -449,37 +524,31 @@ class _BaseRTSPClient:
             logger.error(f"启动流异常: {e.details()}")
             return None
 
+    @_grpc_retry(default_return=False)
     def stop_stream(self, stream_id: str) -> bool:
         if not self._ensure_stub():
             logger.error("未连接到服务器")
             return False
-        try:
-            req = stream_service_pb2.StopRequest(stream_id=stream_id)
-            resp = self._stub.StopStream(req, timeout=5)
-            if resp.success:
-                logger.info(f"流已停止: {stream_id}")
-            else:
-                logger.warning(f"停止流失败: {resp.message}")
-            return resp.success
-        except grpc.RpcError as e:
-            logger.error(f"停止流异常: {e.details()}")
-            return False
+        req = stream_service_pb2.StopRequest(stream_id=stream_id)
+        resp = self._stub.StopStream(req, timeout=5)
+        if resp.success:
+            logger.info(f"流已停止: {stream_id}")
+        else:
+            logger.warning(f"停止流失败: {resp.message}")
+        return resp.success
 
+    @_grpc_retry(default_return=False)
     def update_stream_url(self, stream_id: str, new_rtsp_url: str) -> bool:
         if not self._ensure_stub():
             logger.error("未连接到服务器")
             return False
-        try:
-            req = stream_service_pb2.UpdateStreamRequest(stream_id=stream_id, new_rtsp_url=new_rtsp_url)
-            resp = self._stub.UpdateStream(req, timeout=5)
-            if resp.success:
-                logger.info(f"流 URL 已更新: {stream_id} -> {new_rtsp_url}")
-            else:
-                logger.warning(f"更新流 URL 失败: {resp.message}")
-            return resp.success
-        except grpc.RpcError as e:
-            logger.error(f"更新流 URL 异常: {e.details()}")
-            return False
+        req = stream_service_pb2.UpdateStreamRequest(stream_id=stream_id, new_rtsp_url=new_rtsp_url)
+        resp = self._stub.UpdateStream(req, timeout=5)
+        if resp.success:
+            logger.info(f"流 URL 已更新: {stream_id} -> {new_rtsp_url}")
+        else:
+            logger.warning(f"更新流 URL 失败: {resp.message}")
+        return resp.success
 
     def update_stream_url_isolated(self, stream_id: str, new_rtsp_url: str) -> bool:
         with grpc.insecure_channel(self.server_address) as channel:
@@ -496,54 +565,17 @@ class _BaseRTSPClient:
                 logger.error(f"更新流 URL 异常: {e.details()}")
                 return False
 
+    @_grpc_retry(default_return=[])
     def list_streams(self) -> List[Dict]:
         if not self._ensure_stub():
             logger.error("未连接到服务器")
             return []
-        try:
-            req = stream_service_pb2.ListStreamsRequest()
-            resp = self._stub.ListStreams(req, timeout=5)
-            streams = []
-            for s in resp.streams:
-                streams.append({
-                    "stream_id": s.stream_id,
-                    "rtsp_url": s.rtsp_url,
-                    "status": s.status,
-                    "status_name": STATUS_NAMES.get(s.status, "未知"),
-                    "decoder_type": DECODER_NAMES.get(s.decoder_type, "Unknown"),
-                    "decoder_type_raw": s.decoder_type,
-                    "width": s.width,
-                    "height": s.height,
-                    "decode_interval_ms": s.decode_interval_ms,
-                    "heartbeat_timeout_ms": s.heartbeat_timeout_ms,
-                    "keep_on_failure": s.keep_on_failure,
-                    "only_key_frames": s.only_key_frames,
-                    "use_shared_mem": s.use_shared_mem
-                })
-            return streams
-        except grpc.RpcError as e:
-            logger.error(f"查询流列表失败: {e.details()}")
-            return []
-
-    def get_stream_count(self) -> int:
-        if not self._ensure_stub():
-            return -1
-        try:
-            req = stream_service_pb2.ListStreamsRequest()
-            resp = self._stub.ListStreams(req, timeout=5)
-            return resp.total_count
-        except grpc.RpcError:
-            return -1
-
-    def check_stream(self, stream_id: str) -> Optional[Dict]:
-        if not self._ensure_stub():
-            return None
-        try:
-            req = stream_service_pb2.CheckRequest(stream_id=stream_id)
-            resp = self._stub.CheckStream(req, timeout=5)
-            s = resp.stream
-            return {
-                "stream_id": s.stream_id or stream_id,
+        req = stream_service_pb2.ListStreamsRequest()
+        resp = self._stub.ListStreams(req, timeout=5)
+        streams = []
+        for s in resp.streams:
+            streams.append({
+                "stream_id": s.stream_id,
                 "rtsp_url": s.rtsp_url,
                 "status": s.status,
                 "status_name": STATUS_NAMES.get(s.status, "未知"),
@@ -555,12 +587,41 @@ class _BaseRTSPClient:
                 "heartbeat_timeout_ms": s.heartbeat_timeout_ms,
                 "keep_on_failure": s.keep_on_failure,
                 "only_key_frames": s.only_key_frames,
-                "use_shared_mem": s.use_shared_mem,
-                "server_message": resp.message
-            }
-        except grpc.RpcError as e:
-            logger.error(f"检查流状态异常: {e.details()}")
+                "use_shared_mem": s.use_shared_mem
+            })
+        return streams
+
+    @_grpc_retry(default_return=-1)
+    def get_stream_count(self) -> int:
+        if not self._ensure_stub():
+            return -1
+        req = stream_service_pb2.ListStreamsRequest()
+        resp = self._stub.ListStreams(req, timeout=5)
+        return resp.total_count
+
+    @_grpc_retry(default_return=None)
+    def check_stream(self, stream_id: str) -> Optional[Dict]:
+        if not self._ensure_stub():
             return None
+        req = stream_service_pb2.CheckRequest(stream_id=stream_id)
+        resp = self._stub.CheckStream(req, timeout=5)
+        s = resp.stream
+        return {
+            "stream_id": s.stream_id or stream_id,
+            "rtsp_url": s.rtsp_url,
+            "status": s.status,
+            "status_name": STATUS_NAMES.get(s.status, "未知"),
+            "decoder_type": DECODER_NAMES.get(s.decoder_type, "Unknown"),
+            "decoder_type_raw": s.decoder_type,
+            "width": s.width,
+            "height": s.height,
+            "decode_interval_ms": s.decode_interval_ms,
+            "heartbeat_timeout_ms": s.heartbeat_timeout_ms,
+            "keep_on_failure": s.keep_on_failure,
+            "only_key_frames": s.only_key_frames,
+            "use_shared_mem": s.use_shared_mem,
+            "server_message": resp.message
+        }
 
     def check_stream_exists(self, stream_id: str) -> bool:
         info = self.check_stream(stream_id)
@@ -601,6 +662,10 @@ class RTSPClient(_BaseRTSPClient):
     注：服务端 gRPC 字段名为 frame_seq，但实际下发的是时间戳（毫秒），
     因此两种模式统一理解为“帧时间戳”。
 
+    自动重连：gRPC 调用在捕获 UNAVAILABLE 时会自动关闭并重建连接后重试一次。
+    自动重启流：服务端重启导致 stream_id 失效时，会用 start_stream 时的相同参数
+    自动重新启动流，并继续读取。对业务层透明。
+
     若 use_shared_mem=True 但本地不存在 /dev/shm/<stream_id>，
     read() 会报错并返回 (-1, None)（说明客户端与服务端不在同一机器或 SHM 创建失败）。
     """
@@ -608,7 +673,9 @@ class RTSPClient(_BaseRTSPClient):
     def __init__(self, server_address: str = '127.0.0.1:50051'):
         super().__init__(server_address)
         self._shm_readers: Dict[str, _ShmReader] = {}
-        self._stream_modes: Dict[str, bool] = {}  # stream_id -> use_shared_mem 缓存
+        self._stream_modes: Dict[str, bool] = {}     # stream_id -> use_shared_mem 缓存
+        self._stream_params: Dict[str, dict] = {}     # original_stream_id -> 启动参数
+        self._stream_id_map: Dict[str, str] = {}      # original_stream_id -> current_stream_id
 
     def disconnect(self):
         # 清理所有 SHM 读取器
@@ -619,7 +686,184 @@ class RTSPClient(_BaseRTSPClient):
                 pass
         self._shm_readers.clear()
         self._stream_modes.clear()
+        # 注意：_stream_params 和 _stream_id_map 在 reconnect 后仍需保留，
+        # 以便服务端重启时能够自动重新启动流。只有 stop_stream / _cleanup_stream_cache
+        # 才应该显式清理这些缓存。
         super().disconnect()
+
+    def _cleanup_stream_cache(self, stream_id: str):
+        """清理某一路流的内部缓存"""
+        self._stream_params.pop(stream_id, None)
+        self._stream_id_map.pop(stream_id, None)
+        self._stream_modes.pop(stream_id, None)
+        reader = self._shm_readers.pop(stream_id, None)
+        if reader:
+            try:
+                reader.close()
+            except Exception:
+                pass
+
+    def start_stream(self,
+                     rtsp_url: str,
+                     heartbeat_timeout_ms: int = 100000,
+                     decode_interval_ms: int = 0,
+                     decoder_type: int = DECODER_CPU_FFMPEG,
+                     gpu_id: int = 0,
+                     keep_on_failure: bool = False,
+                     use_shared_mem: bool = False,
+                     only_key_frames: bool = False) -> Optional[str]:
+        """启动流并缓存启动参数，用于服务端重启后的自动恢复"""
+        stream_id = super().start_stream(
+            rtsp_url=rtsp_url,
+            heartbeat_timeout_ms=heartbeat_timeout_ms,
+            decode_interval_ms=decode_interval_ms,
+            decoder_type=decoder_type,
+            gpu_id=gpu_id,
+            keep_on_failure=keep_on_failure,
+            use_shared_mem=use_shared_mem,
+            only_key_frames=only_key_frames
+        )
+        if stream_id:
+            self._stream_params[stream_id] = {
+                "rtsp_url": rtsp_url,
+                "heartbeat_timeout_ms": heartbeat_timeout_ms,
+                "decode_interval_ms": decode_interval_ms,
+                "decoder_type": decoder_type,
+                "gpu_id": gpu_id,
+                "keep_on_failure": keep_on_failure,
+                "use_shared_mem": use_shared_mem,
+                "only_key_frames": only_key_frames,
+            }
+            self._stream_id_map[stream_id] = stream_id
+        return stream_id
+
+    def stop_stream(self, stream_id: str) -> bool:
+        """停止流并清理内部缓存"""
+        current_id = self._stream_id_map.get(stream_id, stream_id)
+        result = super().stop_stream(current_id)
+        self._cleanup_stream_cache(stream_id)
+        return result
+
+    def _restart_stream_if_needed(self, stream_id: str) -> Optional[str]:
+        """
+        如果 stream_id 已失效，用缓存的相同参数重新启动。
+        返回当前有效的 stream_id；无法重启则返回 None。
+        """
+        params = self._stream_params.get(stream_id)
+        if not params:
+            logger.debug(f"[RTSPClient] 无缓存参数，无法自动重启: {stream_id}")
+            return stream_id  # 没有缓存参数，无法自动重启，返回原 ID
+
+        current_id = self._stream_id_map.get(stream_id, stream_id)
+        logger.debug(
+            f"[RTSPClient] _restart_stream_if_needed: original={stream_id}, "
+            f"current_id={current_id}"
+        )
+        status_info = self.check_stream(current_id)
+        fresh_id = self._stream_id_map.get(stream_id, stream_id)
+
+        # check_stream 可能触发重连，_stream_id_map 在此过程中被其他路径更新，
+        # 需要以最新映射为准重新查询状态。
+        if fresh_id != current_id:
+            logger.info(
+                f"[RTSPClient] check_stream 期间流映射发生变化: "
+                f"{stream_id}: {current_id} -> {fresh_id}，重新查询"
+            )
+            current_id = fresh_id
+            status_info = self.check_stream(current_id)
+
+        # 流仍有效，直接返回当前 ID
+        if status_info is not None and status_info.get("status") != STATUS_NOT_FOUND:
+            logger.debug(
+                f"[RTSPClient] 流仍有效: original={stream_id}, current_id={current_id}, "
+                f"status={status_info.get('status_name')}"
+            )
+            return current_id
+
+        logger.warning(
+            f"[RTSPClient] 流 {stream_id} (current_id={current_id}) 已失效，"
+            f"尝试用相同参数重新启动..."
+        )
+        new_id = super().start_stream(**params)
+        if not new_id:
+            logger.error(f"[RTSPClient] 流 {stream_id} 重启失败")
+            return None
+
+        # 防止重连/并发路径已经重启了流，导致同一原始 ID 对应多个服务端流
+        existing_id = self._stream_id_map.get(stream_id)
+        if existing_id and existing_id != stream_id and existing_id != new_id:
+            logger.warning(
+                f"[RTSPClient] 流 {stream_id} 在启动过程中已被其他路径重启为 {existing_id}，"
+                f"将停止冗余流 {new_id}"
+            )
+            try:
+                super().stop_stream(new_id)
+            except Exception:
+                pass
+            chosen_id = existing_id
+        else:
+            chosen_id = new_id
+            self._stream_id_map[stream_id] = new_id
+
+        logger.info(f"[RTSPClient] 流已重启: {stream_id} -> {chosen_id}")
+        # 清理旧 SHM reader（如果存在）
+        for old_id in (stream_id, current_id):
+            old_reader = self._shm_readers.pop(old_id, None)
+            if old_reader:
+                try:
+                    old_reader.close()
+                except Exception:
+                    pass
+        # 清除模式缓存，下次 read 会重新查询
+        self._stream_modes.pop(stream_id, None)
+        self._stream_modes.pop(current_id, None)
+        return chosen_id
+
+    def _get_current_stream_id(self, stream_id: str) -> Optional[str]:
+        """获取当前有效的 stream_id，必要时自动重启"""
+        result = self._restart_stream_if_needed(stream_id)
+        logger.debug(
+            f"[RTSPClient] _get_current_stream_id: original={stream_id}, result={result}"
+        )
+        return result
+
+    def get_active_stream_id(self, stream_id: str) -> Optional[str]:
+        """
+        获取指定原始 stream_id 当前对应的有效 stream_id。
+        如果服务端已重启并自动重启了流，返回的是新的 stream_id；否则返回原 ID。
+        """
+        return self._stream_id_map.get(stream_id, stream_id)
+
+    def check_stream(self, stream_id: str) -> Optional[Dict]:
+        """查询单个流状态时自动映射到当前有效的 stream_id"""
+        current_id = self._stream_id_map.get(stream_id, stream_id)
+        return super().check_stream(current_id)
+
+    def is_stream_connected(self, stream_id: str) -> bool:
+        info = self.check_stream(stream_id)
+        return info is not None and info.get("status") == STATUS_CONNECTED
+
+    def check_stream_exists(self, stream_id: str) -> bool:
+        info = self.check_stream(stream_id)
+        if info is None:
+            return False
+        return info.get("status", STATUS_NOT_FOUND) != STATUS_NOT_FOUND
+
+    def get_stream_status(self, stream_id: str) -> int:
+        info = self.check_stream(stream_id)
+        return info.get("status", STATUS_NOT_FOUND) if info else STATUS_NOT_FOUND
+
+    def get_stream_status_name(self, stream_id: str) -> str:
+        return STATUS_NAMES.get(self.get_stream_status(stream_id), "未知")
+
+    def update_stream_url(self, stream_id: str, new_rtsp_url: str) -> bool:
+        """更新当前有效流的 RTSP URL"""
+        current_id = self._stream_id_map.get(stream_id, stream_id)
+        result = super().update_stream_url(current_id, new_rtsp_url)
+        # URL 改变后清空参数缓存，防止后续自动重启仍使用旧 URL
+        if result:
+            self._stream_params.pop(stream_id, None)
+        return result
 
     @staticmethod
     def _decode_jpeg(jpeg_data: bytes) -> Optional[np.ndarray]:
@@ -681,7 +925,11 @@ class RTSPClient(_BaseRTSPClient):
         """
         获取指定流的最新帧，自动根据 use_shared_mem 选择路径
 
-        :param stream_id: 流 ID
+        特性：
+          - gRPC JPEG 路径在服务端 UNAVAILABLE 时会自动重连并重试（指数退避）
+          - 服务端重启导致 stream_id 失效时，会用缓存参数自动重启流并继续读取
+
+        :param stream_id: 流 ID（start_stream 返回的原始 ID）
         :param blocking: 仅对 SHM 模式有效，是否阻塞等待新帧
         :param timeout_ms: 仅对 SHM 模式有效，阻塞超时（毫秒）
         :return: (帧时间戳, 图像帧)。失败返回 (-1, None)
@@ -689,9 +937,21 @@ class RTSPClient(_BaseRTSPClient):
         if not self._ensure_stub():
             return -1, None
 
+        # 确保流有效（服务端重启时会自动用相同参数重新启动）
+        current_id = self._get_current_stream_id(stream_id)
+        logger.debug(
+            f"[RTSPClient] read: original={stream_id}, initial_current_id={current_id}"
+        )
+        if not current_id:
+            return -1, None
+
         # 优先按服务端配置决定路径
-        if self._stream_uses_shm(stream_id):
-            reader = self._get_shm_reader(stream_id)
+        if self._stream_uses_shm(current_id):
+            # _stream_uses_shm 内部可能触发重连/重启，刷新当前有效 id
+            current_id = self._get_current_stream_id(stream_id)
+            if not current_id:
+                return -1, None
+            reader = self._get_shm_reader(current_id)
             if reader is None:
                 return -1, None
             ok, img, ts = reader.read(blocking=blocking, timeout_ms=timeout_ms)
@@ -699,28 +959,60 @@ class RTSPClient(_BaseRTSPClient):
                 return int(ts), img
             return -1, None
 
-        # gRPC JPEG 路径
-        try:
-            req = stream_service_pb2.FrameRequest(stream_id=stream_id)
-            resp = self._stub.GetLatestFrame(req, timeout=5)
-            frame_seq = getattr(resp, "frame_seq", -1)
-            if resp.success and resp.image_data:
-                img = self._decode_jpeg(resp.image_data)
-                return frame_seq, img
-            return frame_seq, None
-        except Exception as e:
-            logger.error(f"[RTSPClient] gRPC 读取失败: {e}")
-            return -1, None
+        # gRPC JPEG 路径（带 UNAVAILABLE 自动重连，指数退避）
+        max_retries = 3
+        for attempt in range(max_retries + 1):
+            # 每次尝试前刷新当前有效的 stream_id，防止期间发生二次重启
+            current_id = self._get_current_stream_id(stream_id)
+            if not current_id:
+                return -1, None
+
+            try:
+                req = stream_service_pb2.FrameRequest(stream_id=current_id)
+                resp = self._stub.GetLatestFrame(req, timeout=5)
+                frame_seq = getattr(resp, "frame_seq", -1)
+                if resp.success and resp.image_data:
+                    img = self._decode_jpeg(resp.image_data)
+                    return frame_seq, img
+                # 记录无帧原因，便于诊断
+                logger.info(
+                    f"[RTSPClient] GetLatestFrame 无帧: "
+                    f"stream_id={current_id}, success={resp.success}, "
+                    f"has_data={bool(resp.image_data)}, frame_seq={frame_seq}"
+                )
+                return frame_seq, None
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.UNAVAILABLE and attempt < max_retries:
+                    sleep_time = 1.0 * (2 ** attempt)
+                    logger.warning(f"[RTSPClient] gRPC 读取遇到 UNAVAILABLE，{sleep_time:.1f}s 后尝试重连")
+                    time.sleep(sleep_time)
+                    if not self.reconnect():
+                        break
+                    continue
+                logger.error(f"[RTSPClient] gRPC 读取失败: {e.details()}")
+                return -1, None
+            except Exception as e:
+                logger.error(f"[RTSPClient] gRPC 读取失败: {e}")
+                return -1, None
+        return -1, None
 
     def stream_frames(self, stream_id: str, max_fps: int = 0) -> Generator[Tuple[int, Optional[np.ndarray]], None, None]:
         """
         流式获取视频帧（仅 gRPC JPEG 模式支持生成器；SHM 模式会提示并降级为空）
+
+        服务端重启导致流失效时，生成器会结束，业务层需要重新调用 start_stream + stream_frames。
         """
         if not self._ensure_stub():
             logger.error("未连接到服务器")
             return
 
-        if self._stream_uses_shm(stream_id):
+        # 确保流有效
+        current_id = self._get_current_stream_id(stream_id)
+        if not current_id:
+            logger.error("[RTSPClient] 流无效且无法自动重启")
+            return
+
+        if self._stream_uses_shm(current_id):
             logger.error(
                 f"[RTSPClient] stream_frames 不支持共享内存模式，"
                 f"请使用 read(stream_id, blocking=True)。"
@@ -728,13 +1020,15 @@ class RTSPClient(_BaseRTSPClient):
             return
 
         try:
-            req = stream_service_pb2.StreamRequest(stream_id=stream_id, max_fps=max_fps)
+            req = stream_service_pb2.StreamRequest(stream_id=current_id, max_fps=max_fps)
             for resp in self._stub.StreamFrames(req):
                 if resp.success and resp.image_data and resp.frame_seq != -1:
                     img = self._decode_jpeg(resp.image_data)
                     yield (resp.frame_seq, img)
                 else:
                     yield (-1, None)
+        except grpc.RpcError as e:
+            logger.error(f"流式读取异常: {e.details()}")
         except Exception as e:
             logger.error(f"流式读取异常: {e}")
 

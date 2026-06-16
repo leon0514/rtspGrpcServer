@@ -147,6 +147,9 @@ def example_poll_frame(decoder_type: int = DECODER_CPU_FFMPEG,
                 if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
                     print(f"  流已断开: {STATUS_NAMES.get(status)}")
                     break
+                if status == STATUS_CONNECTING:
+                    time.sleep(0.2)
+                    continue
                 if fail_count > 30:
                     print("  连续获取失败次数过多，退出")
                     break
@@ -206,6 +209,12 @@ def example_stream_frames(save_images: bool = False, max_frames: int = 100):
                 if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
                     print(f"  流已断开: {STATUS_NAMES.get(status)}")
                     break
+                if status == STATUS_CONNECTING:
+                    time.sleep(0.2)
+                    continue
+                if status == STATUS_CONNECTING:
+                    time.sleep(0.2)
+                    continue
                 print(f"  接收帧失败, 状态: {STATUS_NAMES.get(status, '未知')}")
 
             if ok_count >= max_frames:
@@ -265,6 +274,9 @@ def example_shared_memory(blocking: bool = True,
                 if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
                     print(f"  流已断开: {STATUS_NAMES.get(status)}")
                     break
+                if status == STATUS_CONNECTING:
+                    time.sleep(0.2)
+                    continue
 
         elapsed = time.time() - start
         print(f"\nSHM 读取 {ok_count} 帧, 耗时 {elapsed:.2f}s, "
@@ -544,6 +556,116 @@ def example_reconnect(max_retry: int = 3):
     print(f"\n重试 {max_retry} 次后仍未成功")
 
 
+# ==================== 示例 11: 持续保存图片到指定文件夹 ====================
+
+def example_save_images(output_dir: Optional[str] = None,
+                        use_shared_mem: bool = False,
+                        decoder_type: int = DECODER_CPU_FFMPEG):
+    """
+    持续拉流并把每一帧保存为图片，直到流断开或按 Ctrl+C 停止。
+
+    :param output_dir: 图片保存目录，默认 ./images/<stream_id>
+    :param use_shared_mem: 是否使用共享内存模式
+    :param decoder_type: 解码器类型
+    """
+    print("\n" + "=" * 60)
+    print("示例 11: 持续保存图片到指定文件夹（按 Ctrl+C 停止）")
+    print("=" * 60)
+
+    with RTSPClient(SERVER) as client:
+        stream_id = client.start_stream(
+            RTSP_URL,
+            decoder_type=decoder_type,
+            gpu_id=0,
+            only_key_frames=False,
+            use_shared_mem=use_shared_mem
+        )
+        if not stream_id:
+            print("启动流失败")
+            return
+
+        print(f"流已启动: {stream_id}")
+        if not wait_for_connection(client, stream_id):
+            client.stop_stream(stream_id)
+            return
+        print("流已连接，开始保存图片...")
+
+        base_output_dir = output_dir
+        current_id = stream_id
+
+        def ensure_output_dir(active_id: str) -> str:
+            """根据当前有效 stream_id 创建/切换保存目录"""
+            if base_output_dir is not None:
+                # 用户指定了固定目录，仍在该目录下按 stream_id 分子目录
+                d = os.path.join(base_output_dir, active_id)
+            else:
+                d = os.path.join(OUTPUT_DIR, active_id)
+            os.makedirs(d, exist_ok=True)
+            return d
+
+        output_dir = ensure_output_dir(current_id)
+        print(f"图片保存目录: {output_dir}")
+
+        saved_count = 0
+        empty_count = 0
+        start = time.time()
+        last_report = start
+        connecting_log_count = 0
+
+        try:
+            while True:
+                ts, frame = client.read(stream_id, blocking=use_shared_mem, timeout_ms=1000)
+
+                # 检测流是否已自动重启，必要时切换保存目录并等待连接
+                active_id = client.get_active_stream_id(stream_id)
+                if active_id and active_id != current_id:
+                    current_id = active_id
+                    output_dir = ensure_output_dir(current_id)
+                    empty_count = 0
+                    print(f"  流已重启，切换到新目录: {output_dir}")
+                    print(f"  等待新流连接...")
+                    if not wait_for_connection(client, stream_id, timeout_sec=30):
+                        print("  新流连接失败，停止保存")
+                        break
+                    print("  新流已连接，继续保存")
+
+                if ts != -1 and frame is not None:
+                    connecting_log_count = 0
+                    empty_count = 0
+                    fname = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                    path = os.path.join(output_dir, f"{fname}_{saved_count:08d}.jpg")
+                    cv2.imwrite(path, frame)
+                    saved_count += 1
+
+                    now = time.time()
+                    if now - last_report >= 1.0:
+                        print(f"  已保存 {saved_count} 张, 平均 {saved_count / (now - start):.1f} 张/秒")
+                        last_report = now
+                else:
+                    empty_count += 1
+                    status = client.get_stream_status(stream_id)
+                    if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
+                        print(f"\n流已断开: {STATUS_NAMES.get(status)}")
+                        break
+                    if status == STATUS_CONNECTING:
+                        connecting_log_count += 1
+                        if connecting_log_count % 10 == 0:
+                            print(f"  流正在连接中，已等待 {connecting_log_count * 0.2:.1f}s...")
+                        time.sleep(0.2)
+                        continue
+                    # 流已连接但暂无帧，避免 busy loop
+                    if empty_count % 50 == 0:
+                        print(f"  流已连接但连续 {empty_count} 次未读到帧，继续轮询... (ts={ts})")
+                    time.sleep(0.05)
+        except KeyboardInterrupt:
+            print("\n收到 Ctrl+C，停止保存")
+
+        elapsed = time.time() - start
+        print(f"\n共保存 {saved_count} 张图片到 {output_dir}, "
+              f"耗时 {elapsed:.2f}s, 平均 {saved_count / elapsed:.1f} 张/秒")
+        client.stop_stream(stream_id)
+
+
 # ==================== 主入口 ====================
 
 def print_usage():
@@ -561,6 +683,7 @@ def print_usage():
   8  - 批量开关流
   9  - 动态切换 RTSP URL
   10 - 断线检测与重连
+  11 - 持续保存图片到指定文件夹（按 Ctrl+C 停止）
   all - 顺序运行所有示例（部分示例耗时较长）
 
 环境变量:
@@ -580,6 +703,7 @@ EXAMPLES = {
     "8": example_batch_operations,
     "9": example_update_url,
     "10": example_reconnect,
+    "11": example_save_images,
 }
 
 
@@ -603,6 +727,7 @@ def main():
         example_batch_operations(urls[:2])
         example_update_url()
         example_reconnect()
+        # example_save_images 不放入 all，避免无限制运行
         return
 
     func = EXAMPLES.get(arg)
