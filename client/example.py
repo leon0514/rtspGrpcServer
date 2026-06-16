@@ -1,0 +1,618 @@
+"""
+RTSP gRPC / SharedMemory 客户端综合示例
+
+演示统一客户端 RTSPClient 的各类用法：
+  1. 列出现有流
+  2. 启动流（CPU / GPU / 仅关键帧 / 共享内存）
+  3. 主动轮询读帧（gRPC JPEG）
+  4. 服务端流式推送（gRPC streaming）
+  5. 共享内存零拷贝读帧
+  6. 多线程并发拉取多路流
+  7. gRPC 与 SHM 性能对比
+  8. 批量开关流
+  9. 动态切换 RTSP URL
+  10. 断线重连与异常处理
+
+运行方式:
+    python example.py
+
+默认通过环境变量 GRPC_SERVER 指定服务端地址；未设置时使用 127.0.0.1:50051。
+"""
+
+import os
+import sys
+import time
+import cv2
+import threading
+import datetime
+from typing import Optional, List
+
+from remote_capture import (
+    RTSPClient,
+    DECODER_GPU_NVCUVID,
+    DECODER_CPU_FFMPEG,
+    DECODER_NAMES,
+    STATUS_CONNECTING,
+    STATUS_CONNECTED,
+    STATUS_DISCONNECTED,
+    STATUS_NOT_FOUND,
+    STATUS_NAMES,
+)
+
+# ==================== 配置 ====================
+
+SERVER = os.getenv("GRPC_SERVER", "127.0.0.1:50051")
+# 请替换为你实际可用的 RTSP 地址
+RTSP_URL = os.getenv(
+    "RTSP_URL",
+    "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101"
+)
+
+OUTPUT_DIR = "images"
+
+
+def ensure_output_dir(stream_id: str) -> str:
+    """为每路流创建独立输出目录"""
+    path = os.path.join(OUTPUT_DIR, stream_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def wait_for_connection(client, stream_id: str, timeout_sec: int = 15) -> bool:
+    """通用等待连接成功辅助函数"""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        status = client.get_stream_status(stream_id)
+        if status == STATUS_CONNECTED:
+            return True
+        if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
+            logger.error(f"流连接失败: {STATUS_NAMES.get(status, '未知')}")
+            return False
+        time.sleep(0.2)
+    logger.error("等待流连接超时")
+    return False
+
+
+# ==================== 示例 1: 列出现有流 ====================
+
+def example_list_streams():
+    """查询服务端当前所有流的基本信息"""
+    print("\n" + "=" * 60)
+    print("示例 1: 列出服务端所有流")
+    print("=" * 60)
+
+    with RTSPClient(SERVER) as client:
+        streams = client.list_streams()
+        print(f"流总数: {len(streams)}\n")
+        for s in streams:
+            print(f"ID:       {s['stream_id']}")
+            print(f"  URL:    {s['rtsp_url']}")
+            print(f"  状态:   {s['status_name']}")
+            print(f"  解码器: {s['decoder_type']}")
+            print(f"  分辨率: {s['width']}x{s['height']}")
+            print(f"  SHM:    {s['use_shared_mem']}")
+            print(f"  仅关键帧: {s['only_key_frames']}")
+            print()
+
+
+# ==================== 示例 2: 主动轮询读帧 (gRPC JPEG) ====================
+
+def example_poll_frame(decoder_type: int = DECODER_CPU_FFMPEG,
+                       only_key_frames: bool = False,
+                       max_frames: int = 50):
+    """
+    启动一路流，使用主动轮询（GetLatestFrame）获取帧
+
+    :param decoder_type: CPU 或 GPU 解码器
+    :param only_key_frames: 是否只解码关键帧
+    :param max_frames: 最多读取多少帧后退出
+    """
+    print("\n" + "=" * 60)
+    print(f"示例 2: 主动轮询读帧 ({DECODER_NAMES.get(decoder_type, '?')}, "
+          f"仅关键帧={only_key_frames})")
+    print("=" * 60)
+
+    with RTSPClient(SERVER) as client:
+        stream_id = client.start_stream(
+            RTSP_URL,
+            decoder_type=decoder_type,
+            gpu_id=0,
+            only_key_frames=only_key_frames,
+            use_shared_mem=False
+        )
+        if not stream_id:
+            print("启动流失败")
+            return
+
+        print(f"流已启动: {stream_id}")
+        if not wait_for_connection(client, stream_id):
+            client.stop_stream(stream_id)
+            return
+        print("流已连接，开始读取...")
+
+        ok_count = 0
+        fail_count = 0
+        start = time.time()
+
+        while ok_count < max_frames:
+            ts, frame = client.read(stream_id)
+            if ts != -1 and frame is not None:
+                ok_count += 1
+                if ok_count % 10 == 0:
+                    h, w = frame.shape[:2]
+                    print(f"  已读取 {ok_count} 帧, 最新 ts={ts}, 分辨率={w}x{h}")
+            else:
+                fail_count += 1
+                status = client.get_stream_status(stream_id)
+                if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
+                    print(f"  流已断开: {STATUS_NAMES.get(status)}")
+                    break
+                if fail_count > 30:
+                    print("  连续获取失败次数过多，退出")
+                    break
+                time.sleep(0.05)
+
+        elapsed = time.time() - start
+        print(f"\n读取 {ok_count} 帧, 失败 {fail_count} 次, 耗时 {elapsed:.2f}s, "
+              f"平均 {(ok_count / elapsed):.1f} FPS")
+        client.stop_stream(stream_id)
+        print("流已停止")
+
+
+# ==================== 示例 3: 服务端流式推送 (gRPC streaming) ====================
+
+def example_stream_frames(save_images: bool = False, max_frames: int = 100):
+    """
+    使用服务端流式推送 StreamFrames 获取帧
+
+    :param save_images: 是否把每帧保存为图片
+    :param max_frames: 最多读取多少帧
+    """
+    print("\n" + "=" * 60)
+    print("示例 3: 服务端流式推送读帧")
+    print("=" * 60)
+
+    with RTSPClient(SERVER) as client:
+        stream_id = client.start_stream(
+            RTSP_URL,
+            decoder_type=DECODER_CPU_FFMPEG,
+            only_key_frames=False,
+            use_shared_mem=False
+        )
+        if not stream_id:
+            print("启动流失败")
+            return
+
+        print(f"流已启动: {stream_id}")
+        if not wait_for_connection(client, stream_id):
+            client.stop_stream(stream_id)
+            return
+        print("流已连接，开始接收推送...")
+
+        output_path = ensure_output_dir(stream_id) if save_images else None
+        ok_count = 0
+        start = time.time()
+
+        for ts, frame in client.stream_frames(stream_id, max_fps=0):
+            if ts != -1 and frame is not None:
+                ok_count += 1
+                if save_images:
+                    fname = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                    cv2.imwrite(os.path.join(output_path, f"{fname}.jpg"), frame)
+                if ok_count % 20 == 0:
+                    print(f"  已接收 {ok_count} 帧, ts={ts}")
+            else:
+                status = client.get_stream_status(stream_id)
+                if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
+                    print(f"  流已断开: {STATUS_NAMES.get(status)}")
+                    break
+                print(f"  接收帧失败, 状态: {STATUS_NAMES.get(status, '未知')}")
+
+            if ok_count >= max_frames:
+                break
+
+        elapsed = time.time() - start
+        print(f"\n接收 {ok_count} 帧, 耗时 {elapsed:.2f}s, "
+              f"平均 {(ok_count / elapsed):.1f} FPS")
+        client.stop_stream(stream_id)
+        print("流已停止")
+
+
+# ==================== 示例 4: 共享内存读帧 (SHM) ====================
+
+def example_shared_memory(blocking: bool = True,
+                          duration_sec: int = 10,
+                          decoder_type: int = DECODER_GPU_NVCUVID):
+    """
+    通过共享内存零拷贝读取原始帧
+
+    注意：客户端必须与服务端在同一台机器，且服务端容器启动时带 --ipc=host。
+    """
+    print("\n" + "=" * 60)
+    print(f"示例 4: 共享内存读帧 ({DECODER_NAMES.get(decoder_type, '?')})")
+    print("=" * 60)
+
+    with RTSPClient(SERVER) as client:
+        stream_id = client.start_stream(
+            RTSP_URL,
+            decoder_type=decoder_type,
+            gpu_id=0,
+            only_key_frames=False,
+            use_shared_mem=True
+        )
+        if not stream_id:
+            print("启动流失败")
+            return
+
+        print(f"流已启动: {stream_id}")
+        if not wait_for_connection(client, stream_id):
+            client.stop_stream(stream_id)
+            return
+        print("流已连接，开始通过 SHM 读取...")
+
+        ok_count = 0
+        start = time.time()
+
+        while time.time() - start < duration_sec:
+            ts, frame = client.read(stream_id, blocking=blocking, timeout_ms=1000)
+            if ts != -1 and frame is not None:
+                ok_count += 1
+                if ok_count % 100 == 0:
+                    h, w = frame.shape[:2]
+                    print(f"  已读取 {ok_count} 帧, ts={ts}, {w}x{h}")
+            else:
+                status = client.get_stream_status(stream_id)
+                if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
+                    print(f"  流已断开: {STATUS_NAMES.get(status)}")
+                    break
+
+        elapsed = time.time() - start
+        print(f"\nSHM 读取 {ok_count} 帧, 耗时 {elapsed:.2f}s, "
+              f"平均 {(ok_count / elapsed):.1f} FPS")
+        client.stop_stream(stream_id)
+        print("流已停止")
+
+
+# ==================== 示例 5: cv2.VideoCapture 风格 SHM 接口 ====================
+
+def example_shm_capture_style(duration_sec: int = 10):
+    """使用 RTSPClient 模拟 cv2.VideoCapture 风格的单流 SHM API"""
+    print("\n" + "=" * 60)
+    print("示例 5: RTSPClient 单流 SHM 模式 (类 VideoCapture API)")
+    print("=" * 60)
+
+    client = RTSPClient(SERVER)
+    if not client.connect():
+        print("连接失败")
+        return
+
+    stream_id = client.start_stream(
+        RTSP_URL,
+        decoder_type=DECODER_GPU_NVCUVID,
+        use_shared_mem=True,
+        only_key_frames=False
+    )
+    if not stream_id:
+        print("启动流失败")
+        client.disconnect()
+        return
+
+    if not wait_for_connection(client, stream_id):
+        client.stop_stream(stream_id)
+        client.disconnect()
+        return
+
+    print(f"SHM 流已打开: {stream_id}")
+
+    frame_count = 0
+    start = time.time()
+    opened = True
+
+    while opened and time.time() - start < duration_sec:
+        ts, frame = client.read(stream_id, blocking=True, timeout_ms=1000)
+        if ts != -1 and frame is not None:
+            frame_count += 1
+            if frame_count % 100 == 0:
+                print(f"  已读取 {frame_count} 帧, shape={frame.shape}")
+        else:
+            status = client.get_stream_status(stream_id)
+            if status in (STATUS_DISCONNECTED, STATUS_NOT_FOUND):
+                print("  流已断开")
+                opened = False
+            else:
+                print("  读取失败")
+
+    elapsed = time.time() - start
+    print(f"\n读取 {frame_count} 帧, 耗时 {elapsed:.2f}s, "
+          f"平均 {(frame_count / elapsed):.1f} FPS")
+    client.stop_stream(stream_id)
+    client.disconnect()
+
+
+# ==================== 示例 6: 多线程并发多路流 ====================
+
+def worker_pull_stream(rtsp_url: str, index: int, duration_sec: int = 10):
+    """工作线程：启动一路流并持续拉取"""
+    with RTSPClient(SERVER) as client:
+        stream_id = client.start_stream(
+            rtsp_url,
+            decoder_type=DECODER_GPU_NVCUVID,
+            gpu_id=0,
+            only_key_frames=False,
+            use_shared_mem=True
+        )
+        if not stream_id:
+            print(f"[线程 {index}] 启动流失败")
+            return
+
+        if not wait_for_connection(client, stream_id):
+            client.stop_stream(stream_id)
+            return
+
+        frame_count = 0
+        start = time.time()
+        while time.time() - start < duration_sec:
+            ts, frame = client.read(stream_id, blocking=True, timeout_ms=1000)
+            if ts != -1 and frame is not None:
+                frame_count += 1
+
+        elapsed = time.time() - start
+        print(f"[线程 {index}] 流 {stream_id[:8]}... 读取 {frame_count} 帧, "
+              f"平均 {(frame_count / elapsed):.1f} FPS")
+        client.stop_stream(stream_id)
+
+
+def example_multi_thread(channels: int = 4, duration_sec: int = 10):
+    """
+    并发启动多路流，每路流在独立线程中通过 SHM 拉取
+
+    :param channels: 并发路数
+    :param duration_sec: 每路流拉取时长
+    """
+    print("\n" + "=" * 60)
+    print(f"示例 6: 多线程并发 {channels} 路流")
+    print("=" * 60)
+
+    # 根据通道号构造不同 URL（假设摄像头通道为 101, 201, 301...）
+    urls = [
+        RTSP_URL.replace("Channels/101", f"Channels/{(i + 1) * 100 + 1}")
+        for i in range(channels)
+    ]
+
+    threads = []
+    for i, url in enumerate(urls):
+        t = threading.Thread(target=worker_pull_stream, args=(url, i, duration_sec))
+        t.start()
+        threads.append(t)
+        time.sleep(0.3)  # 错开启动，避免服务端瞬时压力过大
+
+    for t in threads:
+        t.join()
+
+    print("\n所有线程已结束")
+
+
+# ==================== 示例 7: gRPC vs SHM 性能对比 ====================
+
+def example_benchmark(frames: int = 200):
+    """
+    对比同一路流在 gRPC JPEG 模式与 SHM 模式下的拉取性能
+
+    注意：两次测试是顺序执行的，服务端会先关闭再重新开流。
+    """
+    print("\n" + "=" * 60)
+    print(f"示例 7: gRPC JPEG vs SHM 性能对比 ({frames} 帧)")
+    print("=" * 60)
+
+    # gRPC JPEG
+    with RTSPClient(SERVER) as client:
+        sid = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID, use_shared_mem=False)
+        if sid and wait_for_connection(client, sid):
+            start = time.time()
+            count = 0
+            while count < frames:
+                ts, frame = client.read(sid)
+                if ts != -1 and frame is not None:
+                    count += 1
+            elapsed = time.time() - start
+            print(f"gRPC JPEG: {count} 帧 / {elapsed:.2f}s = {count / elapsed:.1f} FPS")
+            client.stop_stream(sid)
+        else:
+            print("gRPC 模式启动失败")
+
+    time.sleep(2)
+
+    # SHM
+    with RTSPClient(SERVER) as client:
+        sid = client.start_stream(RTSP_URL, decoder_type=DECODER_GPU_NVCUVID, use_shared_mem=True)
+        if sid and wait_for_connection(client, sid):
+            start = time.time()
+            count = 0
+            while count < frames:
+                ts, frame = client.read(sid, blocking=True, timeout_ms=1000)
+                if ts != -1 and frame is not None:
+                    count += 1
+            elapsed = time.time() - start
+            print(f"SHM      : {count} 帧 / {elapsed:.2f}s = {count / elapsed:.1f} FPS")
+            client.stop_stream(sid)
+        else:
+            print("SHM 模式启动失败")
+
+
+# ==================== 示例 8: 批量开关流 ====================
+
+def example_batch_operations(urls: List[str]):
+    """批量启动多路流，批量查询状态，再批量停止"""
+    print("\n" + "=" * 60)
+    print(f"示例 8: 批量操作 ({len(urls)} 路流)")
+    print("=" * 60)
+
+    with RTSPClient(SERVER) as client:
+        stream_ids = []
+        for url in urls:
+            sid = client.start_stream(url, decoder_type=DECODER_CPU_FFMPEG, use_shared_mem=False)
+            if sid:
+                stream_ids.append(sid)
+                print(f"  启动: {sid[:8]}... -> {url}")
+            else:
+                print(f"  启动失败: {url}")
+
+        print(f"\n成功启动 {len(stream_ids)} 路流，等待连接...")
+        time.sleep(3)
+
+        print("\n当前流状态:")
+        for sid in stream_ids:
+            status = client.get_stream_status(sid)
+            print(f"  {sid[:8]}... : {STATUS_NAMES.get(status, '未知')}")
+
+        print("\n批量停止...")
+        for sid in stream_ids:
+            client.stop_stream(sid)
+        print("批量停止完成")
+
+
+# ==================== 示例 9: 动态切换 RTSP URL ====================
+
+def example_update_url(new_url: Optional[str] = None):
+    """启动一路流后，动态修改其 RTSP URL"""
+    print("\n" + "=" * 60)
+    print("示例 9: 动态切换 RTSP URL")
+    print("=" * 60)
+
+    if new_url is None:
+        new_url = RTSP_URL.replace("Channels/101", "Channels/201")
+
+    with RTSPClient(SERVER) as client:
+        stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG)
+        if not stream_id:
+            print("启动流失败")
+            return
+
+        print(f"原始流: {stream_id}")
+        if wait_for_connection(client, stream_id):
+            ts, _ = client.read(stream_id)
+            print(f"  切换前读取 ts={ts}")
+
+        if client.update_stream_url(stream_id, new_url):
+            print(f"  已切换 URL 为: {new_url}")
+            # 等待重新连接
+            time.sleep(2)
+            if wait_for_connection(client, stream_id):
+                ts, _ = client.read(stream_id)
+                print(f"  切换后读取 ts={ts}")
+        else:
+            print("  切换 URL 失败")
+
+        client.stop_stream(stream_id)
+
+
+# ==================== 示例 10: 断线检测与重连 ====================
+
+def example_reconnect(max_retry: int = 3):
+    """演示连接断开后使用新 RTSPClient 重新连接"""
+    print("\n" + "=" * 60)
+    print("示例 10: 断线检测与重连")
+    print("=" * 60)
+
+    stream_id = None
+    for attempt in range(1, max_retry + 1):
+        print(f"\n第 {attempt} 次尝试连接...")
+        with RTSPClient(SERVER) as client:
+            stream_id = client.start_stream(RTSP_URL, decoder_type=DECODER_CPU_FFMPEG)
+            if not stream_id:
+                print("  启动失败，重试...")
+                time.sleep(1)
+                continue
+
+            if not wait_for_connection(client, stream_id, timeout_sec=10):
+                print("  连接超时，重试...")
+                client.stop_stream(stream_id)
+                time.sleep(1)
+                continue
+
+            print(f"  连接成功: {stream_id}")
+            ts, frame = client.read(stream_id)
+            if ts != -1 and frame is not None:
+                print(f"  读取成功: ts={ts}, shape={frame.shape}")
+                client.stop_stream(stream_id)
+                return
+            else:
+                print("  读取失败，重试...")
+                client.stop_stream(stream_id)
+                time.sleep(1)
+
+    print(f"\n重试 {max_retry} 次后仍未成功")
+
+
+# ==================== 主入口 ====================
+
+def print_usage():
+    print("""
+用法: python example.py [示例编号]
+
+可用示例:
+  1  - 列出服务端所有流
+  2  - 主动轮询读帧 (gRPC JPEG)
+  3  - 服务端流式推送 (gRPC streaming)
+  4  - 共享内存读帧 (SHM)
+  5  - RTSPClient 单流 SHM 模式 (类 VideoCapture API)
+  6  - 多线程并发多路流
+  7  - gRPC JPEG vs SHM 性能对比
+  8  - 批量开关流
+  9  - 动态切换 RTSP URL
+  10 - 断线检测与重连
+  all - 顺序运行所有示例（部分示例耗时较长）
+
+环境变量:
+  GRPC_SERVER - gRPC 服务端地址，默认 127.0.0.1:50051
+  RTSP_URL    - 测试用 RTSP 地址
+""")
+
+
+EXAMPLES = {
+    "1": example_list_streams,
+    "2": example_poll_frame,
+    "3": example_stream_frames,
+    "4": example_shared_memory,
+    "5": example_shm_capture_style,
+    "6": example_multi_thread,
+    "7": example_benchmark,
+    "8": example_batch_operations,
+    "9": example_update_url,
+    "10": example_reconnect,
+}
+
+
+def main():
+    # 兼容旧 client.py 直接运行：默认执行示例 3（流式推送）
+    arg = sys.argv[1] if len(sys.argv) > 1 else "3"
+
+    if arg in ("-h", "--help", "help"):
+        print_usage()
+        return
+
+    if arg == "all":
+        urls = [RTSP_URL.replace("Channels/101", f"Channels/{(i + 1) * 100 + 1}") for i in range(4)]
+        example_list_streams()
+        example_poll_frame()
+        example_stream_frames(save_images=False, max_frames=50)
+        example_shared_memory(duration_sec=5)
+        example_shm_capture_style(duration_sec=5)
+        example_multi_thread(channels=2, duration_sec=5)
+        example_benchmark(frames=100)
+        example_batch_operations(urls[:2])
+        example_update_url()
+        example_reconnect()
+        return
+
+    func = EXAMPLES.get(arg)
+    if func is None:
+        print(f"未知示例编号: {arg}")
+        print_usage()
+        return
+
+    func()
+
+
+if __name__ == "__main__":
+    main()

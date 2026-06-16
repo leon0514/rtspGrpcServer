@@ -47,12 +47,8 @@ rtspGrpcServer/
 ├── .qoder/                # Qoder IDE 配置
 ├── build/                 # CMake 构建输出（二进制、生成的 protobuf 文件）
 ├── client/                # Python 客户端库和示例
-│   ├── remote_capture.py  # 主客户端库（RemoteCapture），完整 gRPC 接口封装
-│   ├── shm_capture.py     # 共享内存客户端（ShmCapture），类似 cv2.VideoCapture API
-│   ├── shm.py             # 独立 SHM 读取器 + 示例
-│   ├── shm_client.py      # ShmCapture 的命令行封装
-│   ├── client.py          # 客户端示例代码（含多线程压测）
-│   ├── test.py            # 压力测试套件（内存泄漏检测）
+│   ├── remote_capture.py  # 统一客户端（RTSPClient），同时支持 gRPC JPEG 与共享内存
+│   ├── example.py         # 综合示例：含轮询、流式推送、SHM、并发、性能对比、批量操作等
 │   ├── stream_service.proto   # 客户端侧 proto 副本
 │   └── stream_service_pb2.py / stream_service_pb2_grpc.py  # 生成代码
 ├── cpu_decoder_py/        # 空目录（预留）
@@ -225,29 +221,24 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. stream_servic
 
 ## 测试说明
 
-### Python 客户端测试（`client/test.py`）
+### Python 客户端测试（`client/example.py`）
 
-项目没有 C++ 单元测试框架，测试主要通过 Python 客户端脚本进行：
+项目没有 C++ 单元测试框架，测试与示例主要通过 `client/example.py` 进行：
 
-1. **串行反复开关流测试**（`test_sequential_open_close`）：
-   - 默认 300 次迭代，每次拉取 50 帧
-   - 目的：观察内存是否在最初几次增长后封顶，还是无限增长
-   - 要求在服务器端同时观察 `top` 和 `nvidia-smi`
-
-2. **并发压力测试**（`test_concurrent_stress`）：
-   - 默认 5 路并发，多轮次
-   - 目的：检测多线程并发开流/关流时的内存碎片或线程池死锁
+1. **串行反复开关流测试**（`example_poll_frame` / `example_stream_frames`）
+2. **并发压力测试**（`example_multi_thread`）
+3. **gRPC JPEG vs SHM 性能对比**（`example_benchmark`）
+4. **批量操作与断线重连**（`example_batch_operations` / `example_reconnect`）
 
 运行方式：
 ```bash
 cd client
-python test.py
+python example.py [编号]      # 编号 1-10，或 all 顺序运行全部
 ```
 
 ### 手动验证
 
-- `client/client.py` 包含多个示例函数和 15 路 RTSP 的多线程压测代码
-- `client/shm_client.py` 是共享内存客户端的命令行封装
+- `client/example.py` 包含 10 个独立示例，覆盖 gRPC JPEG、SHM、多线程、性能对比、批量操作、断线重连等场景
 
 ---
 
@@ -289,7 +280,7 @@ python test.py
 ## 开发提示
 
 - **proto 文件同步**：`stream_service.proto` 在根目录和 `client/` 下各有一份。修改后需要同时更新，并重新生成 C++ 和 Python 的 protobuf/gRPC 代码。
-- **共享内存布局一致性**：C++ 端的 `zero_copy_channel.hpp` 中定义了 `ShmMeta` / `ShmFrameSlot` 的内存布局（`alignas(64)`）。Python 客户端（`shm_capture.py` / `shm.py`）中硬编码了相同的布局计算逻辑，**任何修改都必须双向同步**。
+- **共享内存布局一致性**：C++ 端的 `zero_copy_channel.hpp` 中定义了 `ShmMeta` / `ShmFrameSlot` 的内存布局（`alignas(64)`）。Python 客户端（`remote_capture.py` 中的 `_ShmReader`）硬编码了相同的布局计算逻辑，**任何修改都必须双向同步**。
 - **CUDA 架构**：`CMakeLists.txt` 中硬编码了 `75 80 86 89` 四个架构，如需支持新 GPU 需要修改此处。
-- **线程池懒加载**：`TaskScheduler` 使用双重检查锁定（Double-Checked Locking）为每 GPU 懒加载线程池，首次使用某 GPU 时才会创建对应线程池。
+- **线程池初始化**：`TaskScheduler` 在 `init()` 中为每个检测到的 GPU 直接创建线程池，避免懒加载带来的数据竞争问题。
 - **心跳机制**：每个流有独立的心跳超时（默认 100 秒），客户端必须定期调用 `GetLatestFrame` / `StreamFrames` / `CheckStream` 保活，否则服务端会自动清理。

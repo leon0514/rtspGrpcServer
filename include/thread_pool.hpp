@@ -10,6 +10,54 @@
 #include <functional>
 #include <tuple>
 #include <utility>
+#include <memory>
+
+/**
+ * 轻量可移动任务包装器
+ *
+ * std::function 要求内部可调用对象可复制，因此无法保存捕获了 std::unique_ptr
+ * 等仅移动类型的 lambda。Task 通过类型擦除 + unique_ptr 实现仅移动的任务队列。
+ */
+class ThreadPoolTask
+{
+    struct Base
+    {
+        virtual ~Base() = default;
+        virtual void call() const = 0;
+    };
+
+    template <typename F>
+    struct Impl : Base
+    {
+        F f;
+        explicit Impl(F &&f_) : f(std::move(f_)) {}
+        void call() const override { f(); }
+    };
+
+    std::unique_ptr<Base> impl_;
+
+public:
+    ThreadPoolTask() = default;
+
+    template <typename F>
+    ThreadPoolTask(F &&f)
+        : impl_(std::make_unique<Impl<F>>(std::forward<F>(f)))
+    {
+    }
+
+    ThreadPoolTask(ThreadPoolTask &&) = default;
+    ThreadPoolTask &operator=(ThreadPoolTask &&) = default;
+
+    ThreadPoolTask(const ThreadPoolTask &) = delete;
+    ThreadPoolTask &operator=(const ThreadPoolTask &) = delete;
+
+    void operator()() const
+    {
+        if (impl_)
+            impl_->call();
+    }
+
+};
 
 class ThreadPool
 {
@@ -22,22 +70,20 @@ public:
                                   {
                 while (true)
                 {
-                    std::function<void()> task;
+                    ThreadPoolTask task;
                     {
                         std::unique_lock<std::mutex> lock(mtx_);
-                        // 线程阻塞直到有任务(需要执行的函数)到任务队列中
+                        // 线程阻塞直到有任务到任务队列中或线程池停止
                         cv_.wait(lock, [this]{ return !tasks_.empty() || !running_; });
-                        // 如果队列空了并且线程池需要被停止了,直接返回,结束循环
+                        // 如果队列空了并且线程池需要被停止，直接返回
                         if (tasks_.empty() && !running_)
                         {
                             return;
                         }
-                         // 从任务队列中取出任务
+                        // 从任务队列中取出任务
                         task = std::move(tasks_.front());
                         tasks_.pop();
                     }
-                    // 这样通过 lambda 创建的 task 对象实际上是一个可调用对象。
-                    // 当你调用 task() 时，它会使用捕获的 f 和 args... 来执行原始的函数或 Lambda 表达式。
                     try
                     {
                         task();
@@ -74,18 +120,17 @@ public:
 
     // 提交任务到任务队列中
     // 1. 使用变长参数模板接收函数的所有参数
-    // 2. 使用 std::forward 完美转发保证参数的左值右值状态, 避免无意间的拷贝或移动，从而提高了效率。
+    // 2. 使用 std::forward 完美转发，支持移动语义（如 std::unique_ptr）
     // 3. 通知线程有数据到队列中了
-    // F&& f, Args&&... args 这个是万能引用
     template <typename Func, typename... Args>
     void enqueue(Func &&func, Args &&...args)
     {
-        // 使用 lambda + tuple 捕获，支持移动语义（如 std::unique_ptr）
-        std::function<void()> task =
+        ThreadPoolTask task(
             [f = std::forward<Func>(func),
              tup = std::tuple<std::decay_t<Args>...>(std::forward<Args>(args)...)]() mutable {
                 std::apply(f, std::move(tup));
-            };
+            });
+
         {
             std::unique_lock<std::mutex> lock(mtx_);
             if (!running_)
@@ -101,7 +146,7 @@ private:
     // 线程列表
     std::vector<std::thread> threads_;
     // 任务队列
-    std::queue<std::function<void()>> tasks_;
+    std::queue<ThreadPoolTask> tasks_;
     std::condition_variable cv_;
     std::mutex mtx_;
 
