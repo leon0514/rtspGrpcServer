@@ -59,6 +59,11 @@ public:
     StreamStatus getStatus() const { return status_; }
     const std::string &getUrl() const { return url_; }
     int getDecoderType() const { return decoder_type_; }
+    int getGpuId() const { return gpu_id_; }
+    int getSavedDecoderType() const { return saved_decoder_type_; }
+    int getSavedGpuId() const { return saved_gpu_id_; }
+    void setSavedDecoderType(int type) { saved_decoder_type_ = type; }
+    void setSavedGpuId(int gpu_id) { saved_gpu_id_ = gpu_id; }
     int getWidth() const { return decoder_ ? decoder_->getWidth() : 0; }
     int getHeight() const { return decoder_ ? decoder_->getHeight() : 0; }
     int getDecodeIntervalMs() const { return decode_interval_ms_; }
@@ -82,6 +87,15 @@ public:
     bool isTimeout();
 
     void updateUrl(const std::string &new_url);
+    void switchDecoder(int decoder_type,
+                       std::unique_ptr<IVideoDecoder> decoder,
+                       const std::string &new_url,
+                       bool use_gpu_encoder,
+                       const std::string &hik_ip = "",
+                       int hik_port = 0,
+                       const std::string &hik_user = "",
+                       const std::string &hik_password = "",
+                       int hik_channel = 0);
     int64_t getFrameSequence() const { return static_cast<int64_t>(frame_seq_.load()); }
 
 private:
@@ -106,6 +120,18 @@ private:
     std::string url_;
     std::string pending_url_;
     std::atomic<bool> url_changed_{false};
+    std::atomic<bool> force_reopen_{false}; // URL 变化但不需要 release 时，强制重新 open
+
+    // 切换解码器相关（用于 UpdateStream 从 RTSP 切到 HIK_SDK 或反向）
+    std::unique_ptr<IVideoDecoder> pending_decoder_;
+    std::atomic<bool> decoder_changed_{false};
+    int pending_decoder_type_ = 0;
+    bool pending_use_gpu_encoder_ = false;
+    std::string pending_hik_ip_;
+    int pending_hik_port_ = 0;
+    std::string pending_hik_user_;
+    std::string pending_hik_password_;
+    int pending_hik_channel_ = 0;
     std::string stream_id_;
     int heartbeat_timeout_ms_;
     int decode_interval_ms_;
@@ -113,6 +139,10 @@ private:
     bool keep_on_failure_;
     bool use_shared_mem_;
     int gpu_id_ = -1;
+
+    // 保存启动时指定的解码器类型和 GPU ID，便于 HIK_SDK 切回 RTSP 时恢复
+    int saved_decoder_type_ = 0;
+    int saved_gpu_id_ = -1;
     cudaStream_t cuda_stream_ = nullptr; // 每路流独立的 CUDA Stream
 
     // 海康 SDK 参数（仅 DECODER_HIK_SDK 有效）

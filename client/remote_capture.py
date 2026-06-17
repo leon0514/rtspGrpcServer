@@ -526,8 +526,10 @@ class _BaseRTSPClient:
             return None
 
         try:
-            # 海康模式：未提供显式字段时尝试从 rtsp_url 解析
-            if decoder_type == DECODER_HIK_SDK:
+            # 海康模式：URL 是 hik://... 或显式指定 HIK_SDK 时触发
+            is_hik_url = rtsp_url.startswith("hik://")
+            is_hik_mode = is_hik_url or (decoder_type == DECODER_HIK_SDK)
+            if is_hik_mode:
                 has_explicit = hik_ip and hik_user and hik_password and hik_channel > 0
                 if not has_explicit:
                     parsed = _parse_hik_url(rtsp_url)
@@ -539,7 +541,7 @@ class _BaseRTSPClient:
                         hik_channel = parsed["hik_channel"]
 
             extra_info = ""
-            if decoder_type == DECODER_HIK_SDK:
+            if is_hik_mode:
                 extra_info = f", HIK: {hik_user}@{hik_ip}:{hik_port}/ch{hik_channel}"
             logger.info(
                 f"正在启动流: {rtsp_url} "
@@ -547,7 +549,9 @@ class _BaseRTSPClient:
                 f"GPU ID: {gpu_id}, SHM: {use_shared_mem}, "
                 f"Only Key Frames: {'Yes' if only_key_frames else 'No'}{extra_info})"
             )
-            if decoder_type != DECODER_GPU_NVCUVID:
+            # 只有非 GPU 解码且非海康模式时才把 gpu_id 重置为 -1；
+            # 海康模式下保留 gpu_id，便于服务端保存供后续切回 RTSP 使用
+            if decoder_type != DECODER_GPU_NVCUVID and not is_hik_mode:
                 gpu_id = -1
 
             req = stream_service_pb2.StartRequest(
@@ -595,7 +599,10 @@ class _BaseRTSPClient:
         if not self._ensure_stub():
             logger.error("未连接到服务器")
             return False
-        req = stream_service_pb2.UpdateStreamRequest(stream_id=stream_id, new_rtsp_url=new_rtsp_url)
+        req = stream_service_pb2.UpdateStreamRequest(
+            stream_id=stream_id,
+            new_rtsp_url=new_rtsp_url,
+        )
         resp = self._stub.UpdateStream(req, timeout=5)
         if resp.success:
             logger.info(f"流 URL 已更新: {stream_id} -> {new_rtsp_url}")
@@ -607,7 +614,10 @@ class _BaseRTSPClient:
         with grpc.insecure_channel(self.server_address) as channel:
             stub = stream_service_pb2_grpc.RTSPStreamServiceStub(channel)
             try:
-                req = stream_service_pb2.UpdateStreamRequest(stream_id=stream_id, new_rtsp_url=new_rtsp_url)
+                req = stream_service_pb2.UpdateStreamRequest(
+                    stream_id=stream_id,
+                    new_rtsp_url=new_rtsp_url,
+                )
                 resp = stub.UpdateStream(req, timeout=5)
                 if resp.success:
                     logger.info(f"流 URL 已更新: {stream_id} -> {new_rtsp_url}")
@@ -771,8 +781,10 @@ class RTSPClient(_BaseRTSPClient):
                      hik_password: str = "",
                      hik_channel: int = 0) -> Optional[str]:
         """启动流并缓存启动参数，用于服务端重启后的自动恢复"""
-        # 海康模式：缓存前也做 URL 解析，确保自动重启参数完整
-        if decoder_type == DECODER_HIK_SDK and not (hik_ip and hik_user and hik_password and hik_channel > 0):
+        # 海康模式：URL 是 hik://... 或显式指定 HIK_SDK 时触发
+        is_hik_url = rtsp_url.startswith("hik://")
+        is_hik_mode = is_hik_url or (decoder_type == DECODER_HIK_SDK)
+        if is_hik_mode and not (hik_ip and hik_user and hik_password and hik_channel > 0):
             parsed = _parse_hik_url(rtsp_url)
             if parsed:
                 hik_ip = parsed["hik_ip"]

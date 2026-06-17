@@ -28,6 +28,11 @@ public:
     // grab() 失败后是否立即 release() 并重新 open()。默认 true（RTSP/FFmpeg 行为）。
     // 海康 SDK 等短连接抓图模式可返回 false，由解码器内部决定是否重连，避免重复登录。
     virtual bool releaseOnGrabFailure() const { return true; }
+
+    // updateUrl() 触发切换时，StreamTask 是否应在 IO 线程先调用 release()。
+    // 默认 true。海康 SDK 可返回 false，由 open(new_url) 内部判断参数是否变化，
+    // 从而避免相同参数下反复 Login/Logout。
+    virtual bool releaseOnUrlChange() const { return true; }
 };
 
 // 图像压缩编码器接口

@@ -721,17 +721,112 @@ def example_hik_sdk():
 
 
         print("已连接，开始读取 10 帧...")
-        for i in range(10):
+        for i in range(10000000):
             ts, frame = client.read(stream_id)
             if frame is not None:
                 print(f"  帧 {i + 1}: ts={ts}, shape={frame.shape}")
-                cv2.imwrite(f"images/hik_frame_{i + 1}.jpg", frame)
+                # cv2.imwrite(f"images/hik_frame_{i + 1}.jpg", frame)
             else:
                 print(f"  帧 {i + 1}: 无数据")
             time.sleep(0.5)
 
         client.stop_stream(stream_id)
         print("海康流已停止")
+
+
+def example_switch_rtsp_hik():
+    """
+    示例 13: RTSP 与海康 SDK 之间动态切换。
+
+    演示启动 RTSP 流时指定 GPU 解码，切换到海康 URL 后，
+    再切回 RTSP 时自动恢复之前保存的 GPU 配置。
+    """
+    print("\n" + "=" * 60)
+    print("示例 13: RTSP <-> 海康 SDK 动态切换")
+    print("=" * 60)
+
+    rtsp_url = os.getenv(
+        "RTSP_URL",
+        "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101"
+    )
+    hik_url = os.getenv(
+        "HIK_URL",
+        "hik://admin:lww123456@172.16.22.16:8000/channel/35"
+    )
+
+    with RTSPClient(SERVER) as client:
+        # 1. 启动 RTSP，指定 GPU 解码
+        stream_id = client.start_stream(
+            rtsp_url,
+            decoder_type=DECODER_GPU_NVCUVID,
+            gpu_id=0,
+            use_shared_mem=False,
+        )
+        if not stream_id:
+            print("启动 RTSP 流失败")
+            return
+        print(f"RTSP 流已启动: {stream_id}")
+        if not wait_for_connection(client, stream_id):
+            client.stop_stream(stream_id)
+            return
+        print("RTSP 已连接")
+        # 2. 切换到海康 URL
+        print(f"\n切换到海康 URL: {hik_url}")
+        if client.update_stream_url(stream_id, hik_url):
+            if wait_for_connection(client, stream_id, timeout_sec=20):
+                # 海康抓图比 RTSP 慢，先等待第一帧真正到达
+                print("等待海康第一帧...")
+                first_ts, first_frame = -1, None
+                for _ in range(50):
+                    first_ts, first_frame = client.read(stream_id)
+                    if first_frame is not None:
+                        break
+                    time.sleep(0.1)
+                if first_frame is None:
+                    print("海康连接成功但 5 秒内未读到任何帧")
+                else:
+                    print(f"海康第一帧到达: ts={first_ts}, shape={first_frame.shape}")
+
+                saved_count = 0
+                for i in range(5):
+                    ts, frame = client.read(stream_id)
+                    if frame is not None:
+                        saved_count += 1
+                        timestamp = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                        cv2.imwrite(f"images/hik_frame_{i:03d}_{timestamp}.jpg", frame)
+                    else:
+                        print(f"  海康第 {i + 1}/5 帧无数据")
+                    # 海康抓图需要 ForceIFrame + sleep + Capture，间隔比一般 RTSP 大
+                    time.sleep(0.3)
+                print(f"海康已连接，实际保存 {saved_count}/5 帧，最后一帧 ts={ts}, "
+                      f"shape={frame.shape if frame is not None else None}")
+            else:
+                print("海康连接超时")
+        else:
+            print("切换到海康 URL 失败")
+        # 3. 切回 RTSP，应自动使用之前保存的 GPU_NVCUVID / gpu_id=0
+        print(f"\n切回 RTSP URL: {rtsp_url}")
+        if client.update_stream_url(stream_id, rtsp_url):
+            if wait_for_connection(client, stream_id, timeout_sec=20):
+                saved_count = 0
+                for i in range(5):
+                    ts, frame = client.read(stream_id)
+                    if frame is not None:
+                        saved_count += 1
+                        timestamp = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                        cv2.imwrite(f"images/rtsp_frame_{i:03d}_{timestamp}.jpg", frame)
+                    else:
+                        print(f"  RTSP 第 {i + 1}/5 帧无数据")
+                    time.sleep(0.1)
+                print(f"RTSP 已恢复，实际保存 {saved_count}/5 帧，最后一帧 ts={ts}, "
+                      f"shape={frame.shape if frame is not None else None}")
+            else:
+                print("RTSP 恢复连接超时")
+        else:
+            print("切回 RTSP URL 失败")
+
+        client.stop_stream(stream_id)
+        print("流已停止")
 
 
 # ==================== 主入口 ====================
@@ -753,6 +848,7 @@ def print_usage():
   10 - 断线检测与重连
   11 - 持续保存图片到指定文件夹（按 Ctrl+C 停止）
   12 - 海康 SDK 直接抓图
+  13 - RTSP <-> 海康 SDK 动态切换
   all - 顺序运行所有示例（部分示例耗时较长）
 
 环境变量:
@@ -780,6 +876,7 @@ EXAMPLES = {
     "10": example_reconnect,
     "11": example_save_images,
     "12": example_hik_sdk,
+    "13": example_switch_rtsp_hik,
 }
 
 

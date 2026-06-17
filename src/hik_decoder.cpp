@@ -10,6 +10,45 @@ HikDecoder::~HikDecoder() {
     release();
 }
 
+bool HikDecoder::parseJpegSize(const std::vector<char> &buffer, int &width, int &height) {
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(buffer.data());
+    size_t n = buffer.size();
+    size_t i = 0;
+    while (i + 1 < n) {
+        if (p[i] != 0xFF) {
+            ++i;
+            continue;
+        }
+        unsigned char marker = p[i + 1];
+        if (marker == 0xD8) { // SOI
+            i += 2;
+            continue;
+        }
+        if (marker == 0xD9) { // EOI
+            break;
+        }
+        // 跳过填充字节 0xFF
+        if (marker == 0xFF) {
+            ++i;
+            continue;
+        }
+        // SOF0/SOF1/SOF2: 包含宽高
+        if ((marker == 0xC0 || marker == 0xC1 || marker == 0xC2) && i + 9 < n) {
+            height = (p[i + 5] << 8) | p[i + 6];
+            width  = (p[i + 7] << 8) | p[i + 8];
+            return true;
+        }
+        // 其他 marker：跳过 segment length
+        if (i + 3 < n) {
+            size_t seg_len = (static_cast<size_t>(p[i + 2]) << 8) | static_cast<size_t>(p[i + 3]);
+            i += 2 + seg_len;
+        } else {
+            break;
+        }
+    }
+    return false;
+}
+
 bool HikDecoder::open(const std::string &url) {
     HikUrlInfo info = parseHikUrl(url);
     if (!info.valid) {
@@ -83,6 +122,7 @@ bool HikDecoder::open(const HikUrlInfo &info) {
     }
 
     spdlog::info("[HikDecoder] Opened hik channel {}, device {}:{}", channel_, ip_, port_);
+    first_frame_after_open_ = true;
     return true;
 }
 
@@ -96,7 +136,7 @@ bool HikDecoder::grab() {
         return false;
     }
 
-    spdlog::debug("[HikDecoder] Grabbing channel {}", channel_);
+    spdlog::info("[HikDecoder] Grabbing channel {}", channel_);
 
     // 强制生成一个关键帧，避免拿到缓存旧图；失败不致命
     // 如果连续失败超过阈值，则禁用 ForceIFrame，避免日志刷屏
@@ -132,16 +172,29 @@ bool HikDecoder::grab() {
         return false;
     }
 
-    spdlog::debug("[HikDecoder] Captured {} bytes for channel {}", jpeg_buffer_.size(), channel_);
+    spdlog::info("[HikDecoder] Captured {} bytes for channel {}", jpeg_buffer_.size(), channel_);
 
-    // 预解码一帧，得到宽高并缓存 last_frame_，供 retrieve / getWidth / getHeight 使用
-    cv::Mat raw(1, static_cast<int>(jpeg_buffer_.size()), CV_8UC1, jpeg_buffer_.data());
-    cv::Mat decoded = cv::imdecode(raw, cv::IMREAD_COLOR);
-    if (!decoded.empty()) {
-        last_frame_ = decoded;
-        width_ = last_frame_.cols;
-        height_ = last_frame_.rows;
-    } else {
+    // 刚 open 后的第一帧可能是设备缓存旧图，丢弃并重新抓一帧
+    if (first_frame_after_open_) {
+        first_frame_after_open_ = false;
+        if (!cap_.ForceIFrame(channel_)) {
+            spdlog::info("[HikDecoder] ForceIFrame on first real capture failed, continue");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        if (!cap_.Capture(channel_, jpeg_buffer_)) {
+            DWORD err = NET_DVR_GetLastError();
+            spdlog::warn("[HikDecoder] Second capture failed for channel {}, error {}", channel_, err);
+            if (err == 47 || err == 1) {
+                opened_ = false;
+            }
+            return false;
+        }
+        spdlog::info("[HikDecoder] Captured second frame {} bytes for channel {}", jpeg_buffer_.size(), channel_);
+    }
+
+    // 只轻量解析 JPEG 头获取宽高，避免完整解码消耗 CPU
+    // gRPC 透传模式完全不需要解码；SHM / retrieve 按需完整解码
+    if (!parseJpegSize(jpeg_buffer_, width_, height_)) {
         spdlog::warn("[HikDecoder] Captured data is not a valid JPEG, size={}", jpeg_buffer_.size());
     }
 
@@ -157,7 +210,7 @@ bool HikDecoder::retrieve(cv::Mat &frame, bool need_data) {
         return true;
     }
 
-    // grab() 已预解码并缓存，直接复用
+    // 按需完整解码 JPEG（SHM 模式需要），解码结果缓存供下次复用
     if (last_frame_.empty()) {
         cv::Mat raw(1, static_cast<int>(jpeg_buffer_.size()), CV_8UC1, jpeg_buffer_.data());
         cv::Mat decoded = cv::imdecode(raw, cv::IMREAD_COLOR);
@@ -191,4 +244,5 @@ void HikDecoder::release() {
     height_ = 0;
     force_iframe_failures_ = 0;
     force_iframe_disabled_ = false;
+    first_frame_after_open_ = false;
 }

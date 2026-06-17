@@ -45,7 +45,8 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     bool only_key_frames = request->only_key_frames();
 
     // 海康 SDK 模式：校验参数并构造内部 URL（用于去重和 decoder open）
-    // 优先使用显式 hik_* 字段；若未提供，则尝试从 rtsp_url（hik://...）解析
+    // 支持两种方式触发：1) decoder_type == HIK_SDK；2) rtsp_url 是 hik://... 格式
+    // 后者允许客户端统一用 decoder_type 指定 RTSP 解码参数，URL 决定实际走海康 SDK
     std::string effective_url = req_url;
     std::string hik_ip = request->hik_ip();
     int hik_port = request->hik_port() > 0 ? request->hik_port() : 8000;
@@ -53,23 +54,25 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     std::string hik_password = request->hik_password();
     int hik_channel = request->hik_channel();
 
-    if (decoder_type == streamingservice::DECODER_HIK_SDK)
+    HikUrlInfo hik_info = parseHikUrl(req_url);
+    bool use_hik_sdk = (decoder_type == streamingservice::DECODER_HIK_SDK) || hik_info.valid;
+
+    if (use_hik_sdk)
     {
         bool has_explicit = !hik_ip.empty() && !hik_user.empty() && !hik_password.empty() && hik_channel > 0;
         if (!has_explicit)
         {
-            HikUrlInfo info = parseHikUrl(req_url);
-            if (!info.valid)
+            if (!hik_info.valid)
             {
                 response->set_success(false);
                 response->set_message("HIK_SDK decoder requires either hik_ip/hik_user/hik_password/hik_channel fields or a rtsp_url like hik://user:pass@ip:port/channel/101");
                 return grpc::Status::OK;
             }
-            hik_ip = info.ip;
-            hik_port = info.port;
-            hik_user = info.user;
-            hik_password = info.password;
-            hik_channel = info.channel;
+            hik_ip = hik_info.ip;
+            hik_port = hik_info.port;
+            hik_user = hik_info.user;
+            hik_password = hik_info.password;
+            hik_channel = hik_info.channel;
         }
         effective_url = "hik://" + hik_user + ":" + hik_password +
                         "@" + hik_ip + ":" + std::to_string(hik_port) +
@@ -103,19 +106,21 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         }
     }
 
+    auto actual_decoder_type = use_hik_sdk ? streamingservice::DECODER_HIK_SDK : decoder_type;
+
     std::string decode_type_str;
-    if (decoder_type == streamingservice::DECODER_CPU_FFMPEG)
+    if (actual_decoder_type == streamingservice::DECODER_CPU_FFMPEG)
         decode_type_str = "FFmpeg";
-    else if (decoder_type == streamingservice::DECODER_GPU_NVCUVID)
+    else if (actual_decoder_type == streamingservice::DECODER_GPU_NVCUVID)
         decode_type_str = "GPU";
-    else if (decoder_type == streamingservice::DECODER_HIK_SDK)
+    else if (actual_decoder_type == streamingservice::DECODER_HIK_SDK)
         decode_type_str = "HIK_SDK";
     else
         decode_type_str = "UNKNOWN";
     spdlog::info("Decoder type: {}, GPU ID: {}, Only key frames: {}", decode_type_str, gpu_id, only_key_frames ? "Yes" : "No");
 
     // 耗时操作：在无锁状态下创建解码器和编码器
-    auto decoder = DecoderFactory::create(decoder_type, gpu_id, only_key_frames);
+    auto decoder = DecoderFactory::create(actual_decoder_type, gpu_id, only_key_frames);
     if (!decoder)
     {
         response->set_success(false);
@@ -124,9 +129,9 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     }
 
     const int jpeg_quality = 85;
-    bool use_gpu_encoder = (decoder_type == streamingservice::DECODER_GPU_NVCUVID);
+    bool use_gpu_encoder = (actual_decoder_type == streamingservice::DECODER_GPU_NVCUVID);
     // 海康 SDK 抓图返回的已经是 JPEG，这里先用 CPU 编码器复用现有路径（后续可优化为直接透传）
-    if (decoder_type == streamingservice::DECODER_HIK_SDK)
+    if (actual_decoder_type == streamingservice::DECODER_HIK_SDK)
         use_gpu_encoder = false;
     spdlog::info("Using {} encoder", use_gpu_encoder ? "NVJPEG GPU" : "OpenCV CPU");
 
@@ -137,7 +142,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         stream_id,
         request->heartbeat_timeout_ms(),
         request->decode_interval_ms(),
-        static_cast<int>(decoder_type),
+        static_cast<int>(actual_decoder_type),
         gpu_id,
         request->keep_on_failure(),
         request->use_shared_mem(),
@@ -149,6 +154,13 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         hik_user,
         hik_password,
         hik_channel);
+
+    // 海康 SDK 模式下保存用户指定的 RTSP 解码参数，便于后续切回 RTSP 时恢复
+    if (use_hik_sdk)
+    {
+        task->setSavedDecoderType(static_cast<int>(decoder_type));
+        task->setSavedGpuId(gpu_id);
+    }
 
     // 双重检查锁定（Double-Checked Locking）
     {
@@ -500,6 +512,29 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
     const std::string &new_url = request->new_rtsp_url();
     std::shared_ptr<StreamTask> task;
 
+    // 解析新 URL，判断是否为海康协议
+    HikUrlInfo hik_info = parseHikUrl(new_url);
+    std::string effective_url = new_url;
+    std::string hik_ip, hik_user, hik_password;
+    int hik_port = 8000;
+    int hik_channel = 1;
+
+    if (hik_info.valid)
+    {
+        hik_ip = hik_info.ip;
+        hik_port = hik_info.port;
+        hik_user = hik_info.user;
+        hik_password = hik_info.password;
+        hik_channel = hik_info.channel;
+        effective_url = "hik://" + hik_user + ":" + hik_password +
+                        "@" + hik_ip + ":" + std::to_string(hik_port) +
+                        "/channel/" + std::to_string(hik_channel);
+    }
+
+    int target_decoder_type = streamingservice::DECODER_CPU_FFMPEG;
+    int target_gpu_id = -1;
+    bool use_gpu_encoder = false;
+
     {
         std::lock_guard<std::shared_mutex> lock(map_mutex_);
 
@@ -514,7 +549,7 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
         task = it->second;
 
         // 2. 检查新 URL 是否已被其他 Task 占用 (防止重复)
-        auto url_it = url_to_id_.find(new_url);
+        auto url_it = url_to_id_.find(effective_url);
         if (url_it != url_to_id_.end() && url_it->second != stream_id)
         {
             response->set_success(false);
@@ -524,16 +559,60 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
 
         // 3. 重要：同步更新索引 Map
         std::string old_url = task->getUrl();
-        if (old_url != new_url)
+        if (old_url != effective_url)
         {
-            url_to_id_.erase(old_url);       // 删掉旧索引
-            url_to_id_[new_url] = stream_id; // 建立新索引
+            url_to_id_.erase(old_url);              // 删掉旧索引
+            url_to_id_[effective_url] = stream_id;  // 建立新索引
             spdlog::info("[MAP UPDATE] Swapped URL index for ID: {}", stream_id);
         }
+
+        // 4. 在持有 task 后确定目标解码器类型
+        //    海康 URL 强制 HIK_SDK；否则使用启动时保存的 RTSP 解码参数
+        if (hik_info.valid)
+        {
+            target_decoder_type = streamingservice::DECODER_HIK_SDK;
+            target_gpu_id = task->getSavedGpuId();
+        }
+        else
+        {
+            int saved_type = task->getSavedDecoderType();
+            // 如果保存的类型是 HIK_SDK（用户未指定 RTSP 解码方式），默认回退到 CPU_FFMPEG
+            target_decoder_type = (saved_type == streamingservice::DECODER_HIK_SDK)
+                                      ? streamingservice::DECODER_CPU_FFMPEG
+                                      : saved_type;
+            target_gpu_id = task->getSavedGpuId();
+        }
+        use_gpu_encoder = (target_decoder_type == streamingservice::DECODER_GPU_NVCUVID);
     } // 锁在这里释放，避免后续 Task 处理阻塞 gRPC 响应
 
-    // 4. 发出切换信号
-    task->updateUrl(new_url);
+    // 4. 如果解码器类型发生变化，切换 decoder；否则只更新 URL
+    if (target_decoder_type != task->getDecoderType())
+    {
+        spdlog::info("[UPDATE] Decoder type changed for stream {}: {} -> {}",
+                     stream_id, task->getDecoderType(), target_decoder_type);
+        auto new_decoder = DecoderFactory::create(
+            static_cast<streamingservice::DecoderType>(target_decoder_type),
+            target_gpu_id);
+        if (!new_decoder)
+        {
+            response->set_success(false);
+            response->set_message("Failed to create target decoder type");
+            return grpc::Status::OK;
+        }
+        task->switchDecoder(target_decoder_type,
+                            std::move(new_decoder),
+                            effective_url,
+                            use_gpu_encoder,
+                            hik_ip,
+                            hik_port,
+                            hik_user,
+                            hik_password,
+                            hik_channel);
+    }
+    else
+    {
+        task->updateUrl(effective_url);
+    }
 
     response->set_success(true);
     response->set_message("URL updated in management map, task will reconnect.");

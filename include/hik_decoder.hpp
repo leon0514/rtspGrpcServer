@@ -39,9 +39,13 @@ public:
     int getHeight() const override { return height_; }
     bool onlyKeyFrames() const override { return false; }
     bool releaseOnGrabFailure() const override { return false; }
+    bool releaseOnUrlChange() const override { return false; }
 
 private:
     bool open(const HikUrlInfo &info);
+
+    // 轻量解析 JPEG SOF marker 中的宽高，避免完整解码
+    static bool parseJpegSize(const std::vector<char> &buffer, int &width, int &height);
 
     HikSDKCap cap_;
     std::string ip_;
@@ -59,4 +63,7 @@ private:
     // ForceIFrame 失败次数统计，连续失败多次后禁用，避免日志刷屏
     int force_iframe_failures_ = 0;
     bool force_iframe_disabled_ = false;
+
+    // 每次 open 后的第一帧可能是设备缓存旧图，丢弃并重新抓一帧
+    bool first_frame_after_open_ = true;
 };

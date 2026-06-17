@@ -67,6 +67,8 @@ StreamTask::StreamTask(const std::string &url,
       decode_interval_ms_(decode_interval_ms),
       decoder_type_(decoder_type),
       gpu_id_(gpu_id),
+      saved_decoder_type_(decoder_type),
+      saved_gpu_id_(gpu_id),
       keep_on_failure_(keep_on_failure),
       use_shared_mem_(use_shared_mem),
       decoder_(std::move(decoder)),
@@ -308,14 +310,59 @@ void StreamTask::stepIO()
 
     std::unique_lock<std::mutex> lock(decoder_mutex_);
 
-    if (url_changed_)
+    // 处理解码器切换（协议变化，如 RTSP -> hik:// 或反向）
+    if (decoder_changed_)
+    {
+        spdlog::info("IO Thread: Switching decoder to type {}, URL: {}", pending_decoder_type_, pending_url_);
+        url_ = pending_url_;
+        decoder_type_ = pending_decoder_type_;
+        use_gpu_encoder_ = pending_use_gpu_encoder_;
+        hik_ip_ = pending_hik_ip_;
+        hik_port_ = pending_hik_port_;
+        hik_user_ = pending_hik_user_;
+        hik_password_ = pending_hik_password_;
+        hik_channel_ = pending_hik_channel_;
+
+        if (decoder_)
+        {
+            decoder_->release();
+        }
+        decoder_ = std::move(pending_decoder_);
+
+        decoder_changed_ = false;
+        url_changed_ = false; // 切换 decoder 时 URL 已同步更新
+        status_ = StreamStatus::CONNECTING;
+
+        // 再次清空缓存帧，防止 switchDecoder 清空后、替换 decoder 前又有旧 stepCompute 写入旧帧
+        {
+            std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
+            latest_encoded_frame_.reset();
+            frame_cv_.notify_all();
+        }
+    }
+    else if (url_changed_)
     {
         spdlog::info("IO Thread: Switching to new URL: {}", pending_url_);
         url_ = pending_url_;
         url_changed_ = false;
         if (decoder_)
         {
-            decoder_->release(); // 在 IO 线程释放，不卡 gRPC 线程
+            if (decoder_->releaseOnUrlChange())
+            {
+                decoder_->release(); // 在 IO 线程释放，不卡 gRPC 线程
+            }
+            else
+            {
+                // 不释放 decoder（如海康 SDK 希望保持登录），强制重新 open 让 decoder 自己判断参数是否变化
+                force_reopen_ = true;
+            }
+        }
+
+        // 再次清空缓存帧，防止 updateUrl 清空后、处理切换前又有旧 stepCompute 写入旧帧
+        {
+            std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
+            latest_encoded_frame_.reset();
+            frame_cv_.notify_all();
         }
     }
 
@@ -327,7 +374,8 @@ void StreamTask::stepIO()
         
 
     // 1. 处理连接断开重连逻辑
-    if (!decoder_->isOpened())
+    bool need_open = !decoder_->isOpened() || force_reopen_.exchange(false);
+    if (need_open)
     {
         const int max_reconnect_attempts = 5;
         if (reconnect_attempts_ >= max_reconnect_attempts)
@@ -639,5 +687,55 @@ void StreamTask::updateUrl(const std::string &new_url)
         url_changed_ = true; // 原子标记 URL 已经改变，等待 stepIO() 循环自然处理
         spdlog::info("StreamTask URL updated: {} -> {}", url_, new_url);
         status_ = StreamStatus::CONNECTING;
+
+        // 清空上一路流的缓存帧，避免新 URL 还未出图时客户端读到旧帧
+        std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
+        latest_encoded_frame_.reset();
+        // 把 frame_seq_ 推进到当前时间戳，确保 waitForNextFrame 在切换后能正常等待新帧
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch()).count();
+        frame_seq_.store(static_cast<uint64_t>(now_ms), std::memory_order_release);
+        frame_cv_.notify_all();
     }
+}
+
+void StreamTask::switchDecoder(int decoder_type,
+                               std::unique_ptr<IVideoDecoder> decoder,
+                               const std::string &new_url,
+                               bool use_gpu_encoder,
+                               const std::string &hik_ip,
+                               int hik_port,
+                               const std::string &hik_user,
+                               const std::string &hik_password,
+                               int hik_channel)
+{
+    std::lock_guard<std::mutex> lock(decoder_mutex_);
+    if (!decoder)
+    {
+        spdlog::error("switchDecoder received null decoder, ignore");
+        return;
+    }
+
+    pending_decoder_ = std::move(decoder);
+    pending_decoder_type_ = decoder_type;
+    pending_use_gpu_encoder_ = use_gpu_encoder;
+    pending_url_ = new_url;
+    pending_hik_ip_ = hik_ip;
+    pending_hik_port_ = hik_port;
+    pending_hik_user_ = hik_user;
+    pending_hik_password_ = hik_password;
+    pending_hik_channel_ = hik_channel;
+    decoder_changed_ = true;
+    spdlog::info("StreamTask decoder switch scheduled: {} -> {}, url: {}",
+                 decoder_type_, pending_decoder_type_, new_url);
+    status_ = StreamStatus::CONNECTING;
+
+    // 清空上一路流的缓存帧，避免新 decoder/URL 还未出图时客户端读到旧帧
+    std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
+    latest_encoded_frame_.reset();
+    // 把 frame_seq_ 推进到当前时间戳，确保 waitForNextFrame 在切换后能正常等待新帧
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch()).count();
+    frame_seq_.store(static_cast<uint64_t>(now_ms), std::memory_order_release);
+    frame_cv_.notify_all();
 }
