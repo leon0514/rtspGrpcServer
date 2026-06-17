@@ -67,6 +67,34 @@ else()
     message(STATUS "Found nvcuvid: ${NVCUVID_LIBRARY}")
 endif()
 
+# ==========================================
+# 2.5 海康 SDK（可选）
+# ==========================================
+set(HIKVISION_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/sdk/hikvision" CACHE PATH "Path to Hikvision SDK root")
+
+set(HIKVISION_SDK_INCLUDE_DIR "${HIKVISION_SDK_ROOT}/hik_header")
+set(HIKVISION_SDK_LIB_DIR "${HIKVISION_SDK_ROOT}/hik_libs")
+
+set(HIKVISION_LIBRARIES "")
+if(EXISTS "${HIKVISION_SDK_INCLUDE_DIR}/HCNetSDK.h")
+    message(STATUS "Found Hikvision SDK include: ${HIKVISION_SDK_INCLUDE_DIR}")
+    foreach(lib_name hcnetsdk HCCore hpr)
+        find_library(HIK_${lib_name}_LIB
+            NAMES ${lib_name}
+            PATHS ${HIKVISION_SDK_LIB_DIR}
+            NO_DEFAULT_PATH
+        )
+        if(HIK_${lib_name}_LIB)
+            message(STATUS "Found Hikvision library ${lib_name}: ${HIK_${lib_name}_LIB}")
+            list(APPEND HIKVISION_LIBRARIES ${HIK_${lib_name}_LIB})
+        else()
+            message(WARNING "Hikvision library ${lib_name} NOT found in ${HIKVISION_SDK_LIB_DIR}")
+        endif()
+    endforeach()
+else()
+    message(WARNING "Hikvision SDK header HCNetSDK.h NOT found in ${HIKVISION_SDK_INCLUDE_DIR}. HIK_SDK decoder will not be available.")
+endif()
+
 # 查找 gRPC C++ 插件
 find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
 
@@ -105,6 +133,10 @@ include_directories(
     ${CUDAToolkit_INCLUDE_DIRS} # 关键：包含 cuda.h 路径
 )
 
+if(EXISTS "${HIKVISION_SDK_INCLUDE_DIR}/HCNetSDK.h")
+    include_directories("${HIKVISION_SDK_INCLUDE_DIR}")
+endif()
+
 # ==========================================
 # 5. 源文件管理
 # ==========================================
@@ -125,7 +157,20 @@ set(SRC_FILES
     src/simple-logger.cpp
     src/cuda_decoder.cpp
     src/timer_scheduler.cpp
+    src/hik_url_parser.cpp   # 海康 URL 解析（无 SDK 依赖）
 )
+
+# 海康 SDK 源文件仅在找到 SDK 时编译
+if(HIKVISION_LIBRARIES)
+    list(APPEND SRC_FILES
+        src/hik.cpp              # 海康 SDK 封装
+        src/hik_decoder.cpp      # 海康 SDK 解码器适配
+    )
+    add_compile_definitions(HAS_HIKVISION_SDK)
+    message(STATUS "Hikvision SDK found, HIK_SDK decoder enabled")
+else()
+    message(WARNING "Hikvision SDK libraries not found, HIK_SDK decoder disabled. Place SDK headers in ${HIKVISION_SDK_INCLUDE_DIR} and libraries in ${HIKVISION_SDK_LIB_DIR}, or use -DHIKVISION_SDK_ROOT=/path/to/sdk")
+endif()
 
 # ==========================================
 # 6. 构建目标
@@ -140,6 +185,15 @@ add_executable(rtsp_server
 set_target_properties(rtsp_server PROPERTIES 
     CUDA_SEPARABLE_COMPILATION ON
 )
+
+# 若链接了海康 SDK，把 SDK 库目录加入运行时搜索路径
+if(HIKVISION_LIBRARIES)
+    set_target_properties(rtsp_server PROPERTIES
+        BUILD_RPATH_USE_ORIGIN ON
+        BUILD_RPATH "${HIKVISION_SDK_LIB_DIR};${HIKVISION_SDK_LIB_DIR}/HCNetSDKCom"
+        INSTALL_RPATH "${HIKVISION_SDK_LIB_DIR};${HIKVISION_SDK_LIB_DIR}/HCNetSDKCom"
+    )
+endif()
 
 # ==========================================
 # 7. 链接库 (修复了 CUDA 目标的命名)
@@ -158,4 +212,5 @@ target_link_libraries(rtsp_server
     grpc++_reflection
     ${JEMALLOC_LIBRARIES}
     ${TURBOJPEG_LIBRARY}
+    ${HIKVISION_LIBRARIES}    # 海康 SDK 库（可选）
 )

@@ -300,7 +300,8 @@
       "type": "string",
       "enum": [
         "DECODER_CPU_FFMPEG",
-        "DECODER_GPU_NVCUVID"
+        "DECODER_GPU_NVCUVID",
+        "DECODER_HIK_SDK"
       ],
       "default": "DECODER_CPU_FFMPEG",
       "title": "定义支持的解码器类型"
@@ -370,6 +371,23 @@
         },
         "onlyKeyFrames": {
           "type": "boolean"
+        },
+        "hikIp": {
+          "type": "string"
+        },
+        "hikPort": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "hikUser": {
+          "type": "string"
+        },
+        "hikPassword": {
+          "type": "string"
+        },
+        "hikChannel": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },
@@ -452,6 +470,23 @@
         },
         "useSharedMem": {
           "type": "boolean"
+        },
+        "hikIp": {
+          "type": "string"
+        },
+        "hikPort": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "hikUser": {
+          "type": "string"
+        },
+        "hikPassword": {
+          "type": "string"
+        },
+        "hikChannel": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },

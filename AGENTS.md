@@ -57,14 +57,17 @@ rtspGrpcServer/
 │   ├── proto/             # 网关 proto 文件
 │   ├── docker-compose.yml # 网关服务编排
 │   └── envoy.yaml         # Envoy 配置文件
-├── include/               # C++ 头文件（22 个）
+├── include/               # C++ 头文件
 │   ├── interfaces.hpp         # 核心抽象：IVideoDecoder, IImageEncoder
 │   ├── rtsp_service.hpp       # gRPC 服务实现（RTSPServiceImpl）
 │   ├── stream_task.hpp        # 每路流任务管理（IO/计算分离）
-│   ├── decoder_factory.hpp    # CPU/GPU 解码器工厂
+│   ├── decoder_factory.hpp    # CPU/GPU/海康 解码器工厂
 │   ├── cpu_decoder.hpp        # FFmpeg 软解封装
 │   ├── cuda_decoder.hpp       # NVIDIA GPU 解码封装
 │   ├── cuvid_decoder.hpp      # 底层 NVCUVID 接口
+│   ├── hik.hpp                # 海康 SDK 封装（HikSDKManager / HikSDKCap）
+│   ├── hik_decoder.hpp        # 海康 SDK 解码器（IVideoDecoder 适配）
+│   ├── hik_url_parser.hpp     # 海康 URL 解析（无 SDK 依赖）
 │   ├── ffmpeg_decoder.hpp     # FFmpeg AVCodec 抽象
 │   ├── ffmpeg_demuxer.hpp     # FFmpeg AVFormatContext 抽象
 │   ├── nvjpeg_encoder.hpp     # GPU JPEG 编码器
@@ -90,6 +93,9 @@ rtspGrpcServer/
 │   ├── cpu_decoder.cpp        # CPU 路径：demux → decode → sws_scale 到 BGR
 │   ├── cuda_decoder.cpp       # GPU 路径：demux → CUVIDDecoder::decode → get_frame
 │   ├── cuvid_decoder.cpp      # 完整 NVCUVID 实现
+│   ├── hik.cpp                # 海康 SDK 登录/通道/抓图实现
+│   ├── hik_decoder.cpp        # 海康 SDK 抓图 → cv::Mat 适配
+│   ├── hik_url_parser.cpp     # 海康 URL 解析实现
 │   ├── ffmpeg_decoder.cpp     # FFmpeg decode/send/receive + sws_scale
 │   ├── ffmpeg_demuxer.cpp     # FFmpeg demux + RTSP 探测 + 关键帧过滤
 │   ├── nvjpeg_encoder.cpp     # NVJPEG 编码
@@ -281,6 +287,8 @@ python example.py [编号]      # 编号 1-10，或 all 顺序运行全部
 
 - **proto 文件同步**：`stream_service.proto` 在根目录和 `client/` 下各有一份。修改后需要同时更新，并重新生成 C++ 和 Python 的 protobuf/gRPC 代码。
 - **共享内存布局一致性**：C++ 端的 `zero_copy_channel.hpp` 中定义了 `ShmMeta` / `ShmFrameSlot` 的内存布局（`alignas(64)`）。Python 客户端（`remote_capture.py` 中的 `_ShmReader`）硬编码了相同的布局计算逻辑，**任何修改都必须双向同步**。
+- **海康 SDK 放置**：`CMakeLists.txt` 默认在 `${CMAKE_SOURCE_DIR}/sdk/hikvision` 下查找 SDK 头文件（`hik_header/HCNetSDK.h`）和库文件（`hik_libs/libhcnetsdk.so` 等）。可通过 `-DHIKVISION_SDK_ROOT=/path/to/sdk` 指定其他路径；若未找到，CMake 会警告，`src/hik.cpp` / `src/hik_decoder.cpp` 不会被编译，`DECODER_HIK_SDK` 将降级为 CPU 解码器并运行时报错。
+- **Docker 中的海康 SDK**：`Dockerfile` / `Dockerfile.cpu` 会把 `sdk/hikvision` 复制到镜像 `/opt/hikvision`，并通过 `LD_LIBRARY_PATH` 和 `ldconfig` 使其可被 `rtsp_server` 加载。`entrypoint.sh` 也做了兜底导出。
 - **CUDA 架构**：`CMakeLists.txt` 中硬编码了 `75 80 86 89` 四个架构，如需支持新 GPU 需要修改此处。
 - **线程池初始化**：`TaskScheduler` 在 `init()` 中为每个检测到的 GPU 直接创建线程池，避免懒加载带来的数据竞争问题。
 - **心跳机制**：每个流有独立的心跳超时（默认 100 秒），客户端必须定期调用 `GetLatestFrame` / `StreamFrames` / `CheckStream` 保活，否则服务端会自动清理。

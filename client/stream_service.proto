@@ -6,6 +6,7 @@ package streamingservice;
 enum DecoderType {
     DECODER_CPU_FFMPEG = 0;   // 默认：使用 CPU OpenCV 解码
     DECODER_GPU_NVCUVID = 1;     // 预留：使用 Nvidia CUDA 硬件解码
+    DECODER_HIK_SDK = 2;      // 海康 SDK 直接抓图
 }
 
 // 流连接状态
@@ -35,6 +36,12 @@ message StartRequest {
     bool keep_on_failure = 6;        // 打开失败时是否保留任务，默认 false（即自动删除）
     bool use_shared_mem = 7; // 是否写入共享内存
     bool only_key_frames = 8; // 是否只解码关键帧
+    // 海康 SDK 参数（仅当 decoder_type = DECODER_HIK_SDK 时有效）
+    string hik_ip = 9;        // 设备 IP
+    int32 hik_port = 10;      // 设备端口（默认 8000）
+    string hik_user = 11;     // 用户名
+    string hik_password = 12; // 密码
+    int32 hik_channel = 13;   // 通道号
 }
 
 message StartResponse {
@@ -86,6 +93,12 @@ message StreamInfo {
     bool keep_on_failure = 9;
     bool only_key_frames = 10;
     bool use_shared_mem = 11;
+    // 海康 SDK 参数（展示用）
+    string hik_ip = 12;
+    int32 hik_port = 13;
+    string hik_user = 14;
+    string hik_password = 15;
+    int32 hik_channel = 16;
 }
 
 message CheckRequest {

@@ -31,6 +31,7 @@ from remote_capture import (
     RTSPClient,
     DECODER_GPU_NVCUVID,
     DECODER_CPU_FFMPEG,
+    DECODER_HIK_SDK,
     DECODER_NAMES,
     STATUS_CONNECTING,
     STATUS_CONNECTED,
@@ -666,6 +667,73 @@ def example_save_images(output_dir: Optional[str] = None,
         client.stop_stream(stream_id)
 
 
+def example_hik_sdk():
+    """
+    示例 12: 通过海康 SDK 直接抓图。
+    "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101"
+    支持两种传参方式：
+      1. 环境变量 HIK_URL，例如 hik://admin:lww123456@172.16.22.16:8000/channel/101
+      2. 环境变量 HIK_IP, HIK_USER, HIK_PASSWORD, HIK_CHANNEL
+    """
+    print("\n" + "=" * 60)
+    print("示例 12: 海康 SDK 直接抓图")
+    print("=" * 60)
+
+    hik_url = os.environ.get("HIK_URL", "hik://admin:lww123456@172.16.22.16:8000/channel/33")
+    if hik_url:
+        print(f"使用 HIK_URL: {hik_url}")
+        rtsp_url = hik_url
+        hik_ip = ""
+        hik_port = 8000
+        hik_user = ""
+        hik_password = ""
+        hik_channel = 0
+    else:
+        hik_ip = os.environ.get("HIK_IP", "")
+        hik_port = int(os.environ.get("HIK_PORT", "8000"))
+        hik_user = os.environ.get("HIK_USER", "")
+        hik_password = os.environ.get("HIK_PASSWORD", "")
+        hik_channel = int(os.environ.get("HIK_CHANNEL", "1"))
+        rtsp_url = ""
+
+        if not hik_ip or not hik_user or not hik_password:
+            print("请设置环境变量 HIK_URL 或 HIK_IP/HIK_USER/HIK_PASSWORD")
+            return
+
+    with RTSPClient(SERVER) as client:
+        stream_id = client.start_stream(
+            rtsp_url=rtsp_url,
+            decoder_type=DECODER_HIK_SDK,
+            hik_ip=hik_ip,
+            hik_port=hik_port,
+            hik_user=hik_user,
+            hik_password=hik_password,
+            hik_channel=hik_channel,
+        )
+        if not stream_id:
+            print("启动海康流失败")
+            return
+
+        print(f"海康流已启动: {stream_id}")
+        if not wait_for_connection(client, stream_id):
+            client.stop_stream(stream_id)
+            return
+
+
+        print("已连接，开始读取 10 帧...")
+        for i in range(10):
+            ts, frame = client.read(stream_id)
+            if frame is not None:
+                print(f"  帧 {i + 1}: ts={ts}, shape={frame.shape}")
+                cv2.imwrite(f"images/hik_frame_{i + 1}.jpg", frame)
+            else:
+                print(f"  帧 {i + 1}: 无数据")
+            time.sleep(0.5)
+
+        client.stop_stream(stream_id)
+        print("海康流已停止")
+
+
 # ==================== 主入口 ====================
 
 def print_usage():
@@ -684,11 +752,18 @@ def print_usage():
   9  - 动态切换 RTSP URL
   10 - 断线检测与重连
   11 - 持续保存图片到指定文件夹（按 Ctrl+C 停止）
+  12 - 海康 SDK 直接抓图
   all - 顺序运行所有示例（部分示例耗时较长）
 
 环境变量:
   GRPC_SERVER - gRPC 服务端地址，默认 127.0.0.1:50051
   RTSP_URL    - 测试用 RTSP 地址
+  HIK_URL     - 海康 URL，例如 hik://admin:pass@172.16.22.16:8000/channel/101
+  HIK_IP      - 海康设备 IP
+  HIK_PORT    - 海康设备端口，默认 8000
+  HIK_USER    - 海康用户名
+  HIK_PASSWORD - 海康密码
+  HIK_CHANNEL - 海康通道号，默认 1
 """)
 
 
@@ -704,6 +779,7 @@ EXAMPLES = {
     "9": example_update_url,
     "10": example_reconnect,
     "11": example_save_images,
+    "12": example_hik_sdk,
 }
 
 

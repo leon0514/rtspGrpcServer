@@ -15,6 +15,7 @@ from typing import Optional, Tuple, List, Dict, Generator
 import cv2
 import grpc
 import numpy as np
+import urllib.parse
 
 # 可选依赖：turbojpeg 仅在 gRPC JPEG 模式下使用
 try:
@@ -34,6 +35,7 @@ __all__ = [
     "RTSPClient",
     "DECODER_CPU_FFMPEG",
     "DECODER_GPU_NVCUVID",
+    "DECODER_HIK_SDK",
     "DECODER_NAMES",
     "STATUS_CONNECTING",
     "STATUS_CONNECTED",
@@ -46,10 +48,12 @@ __all__ = [
 
 DECODER_CPU_FFMPEG = stream_service_pb2.DECODER_CPU_FFMPEG
 DECODER_GPU_NVCUVID = stream_service_pb2.DECODER_GPU_NVCUVID
+DECODER_HIK_SDK = stream_service_pb2.DECODER_HIK_SDK
 
 DECODER_NAMES = {
     DECODER_CPU_FFMPEG: "CPU (FFmpeg)",
-    DECODER_GPU_NVCUVID: "GPU (NVCUVID)"
+    DECODER_GPU_NVCUVID: "GPU (NVCUVID)",
+    DECODER_HIK_SDK: "HIK SDK"
 }
 
 STATUS_CONNECTING = stream_service_pb2.STATUS_CONNECTING
@@ -409,6 +413,30 @@ def _grpc_retry(default_return=None, max_retries: int = 5, backoff_sec: float = 
     return decorator
 
 
+def _parse_hik_url(rtsp_url: str) -> Optional[Dict]:
+    """
+    解析 hik://user:password@ip:port/channel/101 格式的 URL。
+    返回 dict 或 None。
+    """
+    if not rtsp_url.startswith("hik://"):
+        return None
+    try:
+        parsed = urllib.parse.urlparse(rtsp_url)
+        path = parsed.path.strip("/")
+        if not path.startswith("channel/"):
+            return None
+        channel = int(path.split("/")[1])
+        return {
+            "hik_ip": parsed.hostname or "",
+            "hik_port": parsed.port or 8000,
+            "hik_user": parsed.username or "",
+            "hik_password": parsed.password or "",
+            "hik_channel": channel,
+        }
+    except Exception:
+        return None
+
+
 # ==================== gRPC 基类 ====================
 
 class _BaseRTSPClient:
@@ -487,17 +515,37 @@ class _BaseRTSPClient:
                      gpu_id: int = 0,
                      keep_on_failure: bool = False,
                      use_shared_mem: bool = False,
-                     only_key_frames: bool = False) -> Optional[str]:
+                     only_key_frames: bool = False,
+                     hik_ip: str = "",
+                     hik_port: int = 8000,
+                     hik_user: str = "",
+                     hik_password: str = "",
+                     hik_channel: int = 0) -> Optional[str]:
         if not self._ensure_stub():
             logger.error("未连接到服务器")
             return None
 
         try:
+            # 海康模式：未提供显式字段时尝试从 rtsp_url 解析
+            if decoder_type == DECODER_HIK_SDK:
+                has_explicit = hik_ip and hik_user and hik_password and hik_channel > 0
+                if not has_explicit:
+                    parsed = _parse_hik_url(rtsp_url)
+                    if parsed:
+                        hik_ip = parsed["hik_ip"]
+                        hik_port = parsed["hik_port"]
+                        hik_user = parsed["hik_user"]
+                        hik_password = parsed["hik_password"]
+                        hik_channel = parsed["hik_channel"]
+
+            extra_info = ""
+            if decoder_type == DECODER_HIK_SDK:
+                extra_info = f", HIK: {hik_user}@{hik_ip}:{hik_port}/ch{hik_channel}"
             logger.info(
                 f"正在启动流: {rtsp_url} "
                 f"(解码器: {DECODER_NAMES.get(decoder_type, 'Unknown')}, "
                 f"GPU ID: {gpu_id}, SHM: {use_shared_mem}, "
-                f"Only Key Frames: {'Yes' if only_key_frames else 'No'})"
+                f"Only Key Frames: {'Yes' if only_key_frames else 'No'}{extra_info})"
             )
             if decoder_type != DECODER_GPU_NVCUVID:
                 gpu_id = -1
@@ -510,7 +558,12 @@ class _BaseRTSPClient:
                 gpu_id=gpu_id,
                 keep_on_failure=keep_on_failure,
                 use_shared_mem=use_shared_mem,
-                only_key_frames=only_key_frames
+                only_key_frames=only_key_frames,
+                hik_ip=hik_ip,
+                hik_port=hik_port,
+                hik_user=hik_user,
+                hik_password=hik_password,
+                hik_channel=hik_channel
             )
             resp = self._stub.StartStream(req, timeout=10)
 
@@ -711,8 +764,23 @@ class RTSPClient(_BaseRTSPClient):
                      gpu_id: int = 0,
                      keep_on_failure: bool = False,
                      use_shared_mem: bool = False,
-                     only_key_frames: bool = False) -> Optional[str]:
+                     only_key_frames: bool = False,
+                     hik_ip: str = "",
+                     hik_port: int = 8000,
+                     hik_user: str = "",
+                     hik_password: str = "",
+                     hik_channel: int = 0) -> Optional[str]:
         """启动流并缓存启动参数，用于服务端重启后的自动恢复"""
+        # 海康模式：缓存前也做 URL 解析，确保自动重启参数完整
+        if decoder_type == DECODER_HIK_SDK and not (hik_ip and hik_user and hik_password and hik_channel > 0):
+            parsed = _parse_hik_url(rtsp_url)
+            if parsed:
+                hik_ip = parsed["hik_ip"]
+                hik_port = parsed["hik_port"]
+                hik_user = parsed["hik_user"]
+                hik_password = parsed["hik_password"]
+                hik_channel = parsed["hik_channel"]
+
         stream_id = super().start_stream(
             rtsp_url=rtsp_url,
             heartbeat_timeout_ms=heartbeat_timeout_ms,
@@ -721,7 +789,12 @@ class RTSPClient(_BaseRTSPClient):
             gpu_id=gpu_id,
             keep_on_failure=keep_on_failure,
             use_shared_mem=use_shared_mem,
-            only_key_frames=only_key_frames
+            only_key_frames=only_key_frames,
+            hik_ip=hik_ip,
+            hik_port=hik_port,
+            hik_user=hik_user,
+            hik_password=hik_password,
+            hik_channel=hik_channel
         )
         if stream_id:
             self._stream_params[stream_id] = {
@@ -733,6 +806,11 @@ class RTSPClient(_BaseRTSPClient):
                 "keep_on_failure": keep_on_failure,
                 "use_shared_mem": use_shared_mem,
                 "only_key_frames": only_key_frames,
+                "hik_ip": hik_ip,
+                "hik_port": hik_port,
+                "hik_user": hik_user,
+                "hik_password": hik_password,
+                "hik_channel": hik_channel,
             }
             self._stream_id_map[stream_id] = stream_id
         return stream_id

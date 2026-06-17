@@ -55,7 +55,12 @@ StreamTask::StreamTask(const std::string &url,
                        bool use_shared_mem,
                        std::unique_ptr<IVideoDecoder> decoder,
                        bool use_gpu_encoder,
-                       int jpeg_quality)
+                       int jpeg_quality,
+                       const std::string &hik_ip,
+                       int hik_port,
+                       const std::string &hik_user,
+                       const std::string &hik_password,
+                       int hik_channel)
     : url_(url),
       stream_id_(stream_id),
       heartbeat_timeout_ms_(heartbeat_timeout_ms),
@@ -66,7 +71,12 @@ StreamTask::StreamTask(const std::string &url,
       use_shared_mem_(use_shared_mem),
       decoder_(std::move(decoder)),
       use_gpu_encoder_(use_gpu_encoder),
-      jpeg_quality_(jpeg_quality)
+      jpeg_quality_(jpeg_quality),
+      hik_ip_(hik_ip),
+      hik_port_(hik_port),
+      hik_user_(hik_user),
+      hik_password_(hik_password),
+      hik_channel_(hik_channel)
 {
     // 初始化内存池
     frame_pool_ = FrameMemoryPool::create(3 * 1024 * 1024);
@@ -362,7 +372,10 @@ void StreamTask::stepIO()
     {
         spdlog::warn("Frame grab failed: {}", url_);
         connected_ = false;
-        decoder_->release();
+        if (decoder_->releaseOnGrabFailure())
+        {
+            decoder_->release();
+        }
         lock.unlock();
 
         // 抓取失败，退避 50ms 后重试
@@ -485,38 +498,47 @@ void StreamTask::stepCompute()
     else
     {
         auto encode_buffer = frame_pool_->acquire();
-        auto encoder = getThreadLocalEncoder(use_gpu_encoder_, gpu_id_, jpeg_quality_);
-        
-        if (cuda_stream_)
-        {
-            auto *nvjpeg_enc = dynamic_cast<NvjpegEncoder *>(encoder.get());
-            if (nvjpeg_enc)
-            {
-                nvjpeg_enc->setStream(cuda_stream_);
-            }
-        }
 
-        if (decoder_->isGpuFrame() && encoder->supportsGpuEncode())
+        // 优先透传解码器已编码好的帧（如海康 SDK 抓图返回 JPEG），避免二次编解码
+        if (decoder_->getEncodedFrame(*encode_buffer))
         {
-            if (decoder_->retrieve(reusable_frame_, true))
-            {
-                uint8_t *gpu_ptr = decoder_->getGpuFramePtr();
-                if (gpu_ptr)
-                {
-                    frame_ready = encoder->encodeGpu(gpu_ptr, decoder_->getWidth(), 
-                                                     decoder_->getHeight(), *encode_buffer);
-                }
-            }
+            frame_ready = true;
         }
         else
         {
-            if (decoder_->retrieve(reusable_frame_, true) && !reusable_frame_.empty())
+            auto encoder = getThreadLocalEncoder(use_gpu_encoder_, gpu_id_, jpeg_quality_);
+
+            if (cuda_stream_)
             {
-                frame_ready = encoder->encode(reusable_frame_, *encode_buffer);
+                auto *nvjpeg_enc = dynamic_cast<NvjpegEncoder *>(encoder.get());
+                if (nvjpeg_enc)
+                {
+                    nvjpeg_enc->setStream(cuda_stream_);
+                }
+            }
+
+            if (decoder_->isGpuFrame() && encoder->supportsGpuEncode())
+            {
+                if (decoder_->retrieve(reusable_frame_, true))
+                {
+                    uint8_t *gpu_ptr = decoder_->getGpuFramePtr();
+                    if (gpu_ptr)
+                    {
+                        frame_ready = encoder->encodeGpu(gpu_ptr, decoder_->getWidth(),
+                                                         decoder_->getHeight(), *encode_buffer);
+                    }
+                }
+            }
+            else
+            {
+                if (decoder_->retrieve(reusable_frame_, true) && !reusable_frame_.empty())
+                {
+                    frame_ready = encoder->encode(reusable_frame_, *encode_buffer);
+                }
             }
         }
-        
-        // 编码成功后通知订阅者
+
+        // 编码/透传成功后通知订阅者
         if (frame_ready)
         {
             std::shared_ptr<std::string> prev_frame;

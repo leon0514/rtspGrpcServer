@@ -11,7 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
     sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
 
-# 安装编译所需的依赖链：GCC, CMake, OpenCV, gRPC, Protobuf
+# 安装编译所需的依赖链：GCC, CMake, OpenCV, gRPC, Protobuf, FFmpeg
 RUN apt-get update -y && apt-get install -y \
     build-essential \
     cmake \
@@ -24,6 +24,11 @@ RUN apt-get update -y && apt-get install -y \
     libfmt-dev \
     libspdlog-dev \
     libturbojpeg0-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libjemalloc-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
@@ -48,7 +53,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
     sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
 
-# 安装运行所需的动态链接库 (OpenCV 和 gRPC)
+# 安装运行所需的动态链接库
 # 注意：这里安装 -dev 包是为了确保所有的 .so 软链接都完整存在，体积增加可接受
 RUN apt-get update && apt-get install -y \
     libopencv-dev \
@@ -57,10 +62,20 @@ RUN apt-get update && apt-get install -y \
     libfmt-dev \
     libspdlog-dev \
     libturbojpeg0-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libjemalloc-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
+
+# 从 builder 阶段拷贝海康 SDK 运行时库
+COPY --from=builder /app/sdk/hikvision /opt/hikvision
+ENV LD_LIBRARY_PATH=/opt/hikvision/hik_libs:/opt/hikvision/hik_libs/HCNetSDKCom:${LD_LIBRARY_PATH}
+RUN ldconfig /opt/hikvision/hik_libs /opt/hikvision/hik_libs/HCNetSDKCom
 
 # 从 builder 阶段把编译好的二进制可执行文件拷贝过来
 COPY --from=builder /app/build/rtsp_server /app/rtsp_server

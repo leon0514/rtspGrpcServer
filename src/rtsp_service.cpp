@@ -1,5 +1,6 @@
 #include "rtsp_service.hpp"
 #include "decoder_factory.hpp"
+#include "hik_url_parser.hpp"
 #include "opencv_encoder.hpp"
 #include "nvjpeg_encoder.hpp"
 #include "utils.hpp"
@@ -39,11 +40,46 @@ RTSPServiceImpl::~RTSPServiceImpl()
 grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const streamingservice::StartRequest *request, streamingservice::StartResponse *response)
 {
     const std::string &req_url = request->rtsp_url();
+    auto decoder_type = request->decoder_type();
+    int gpu_id = request->gpu_id();
+    bool only_key_frames = request->only_key_frames();
+
+    // 海康 SDK 模式：校验参数并构造内部 URL（用于去重和 decoder open）
+    // 优先使用显式 hik_* 字段；若未提供，则尝试从 rtsp_url（hik://...）解析
+    std::string effective_url = req_url;
+    std::string hik_ip = request->hik_ip();
+    int hik_port = request->hik_port() > 0 ? request->hik_port() : 8000;
+    std::string hik_user = request->hik_user();
+    std::string hik_password = request->hik_password();
+    int hik_channel = request->hik_channel();
+
+    if (decoder_type == streamingservice::DECODER_HIK_SDK)
+    {
+        bool has_explicit = !hik_ip.empty() && !hik_user.empty() && !hik_password.empty() && hik_channel > 0;
+        if (!has_explicit)
+        {
+            HikUrlInfo info = parseHikUrl(req_url);
+            if (!info.valid)
+            {
+                response->set_success(false);
+                response->set_message("HIK_SDK decoder requires either hik_ip/hik_user/hik_password/hik_channel fields or a rtsp_url like hik://user:pass@ip:port/channel/101");
+                return grpc::Status::OK;
+            }
+            hik_ip = info.ip;
+            hik_port = info.port;
+            hik_user = info.user;
+            hik_password = info.password;
+            hik_channel = info.channel;
+        }
+        effective_url = "hik://" + hik_user + ":" + hik_password +
+                        "@" + hik_ip + ":" + std::to_string(hik_port) +
+                        "/channel/" + std::to_string(hik_channel);
+    }
 
     // 使用 url_to_id_ 实现 O(1) 的快速查找，替代原来的 O(N) 遍历
     {
         std::shared_lock<std::shared_mutex> lock(map_mutex_);
-        auto it = url_to_id_.find(req_url);
+        auto it = url_to_id_.find(effective_url);
         if (it != url_to_id_.end())
         {
             std::string existing_id = it->second;
@@ -67,11 +103,15 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         }
     }
 
-    auto decoder_type = request->decoder_type();
-    int gpu_id = request->gpu_id();
-    bool only_key_frames = request->only_key_frames();
-    std::string decode_type_str = (decoder_type == streamingservice::DECODER_CPU_FFMPEG) ? "FFmpeg" : (decoder_type == streamingservice::DECODER_GPU_NVCUVID) ? "GPU"
-                                                                                                                                                              : "UNKNOWN";
+    std::string decode_type_str;
+    if (decoder_type == streamingservice::DECODER_CPU_FFMPEG)
+        decode_type_str = "FFmpeg";
+    else if (decoder_type == streamingservice::DECODER_GPU_NVCUVID)
+        decode_type_str = "GPU";
+    else if (decoder_type == streamingservice::DECODER_HIK_SDK)
+        decode_type_str = "HIK_SDK";
+    else
+        decode_type_str = "UNKNOWN";
     spdlog::info("Decoder type: {}, GPU ID: {}, Only key frames: {}", decode_type_str, gpu_id, only_key_frames ? "Yes" : "No");
 
     // 耗时操作：在无锁状态下创建解码器和编码器
@@ -85,12 +125,15 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
 
     const int jpeg_quality = 85;
     bool use_gpu_encoder = (decoder_type == streamingservice::DECODER_GPU_NVCUVID);
+    // 海康 SDK 抓图返回的已经是 JPEG，这里先用 CPU 编码器复用现有路径（后续可优化为直接透传）
+    if (decoder_type == streamingservice::DECODER_HIK_SDK)
+        use_gpu_encoder = false;
     spdlog::info("Using {} encoder", use_gpu_encoder ? "NVJPEG GPU" : "OpenCV CPU");
 
     std::string stream_id = generate_uuid();
     spdlog::info("Using Shared Memory: {}", request->use_shared_mem() ? "Enabled" : "Disabled");
     auto task = std::make_shared<StreamTask>(
-        req_url,
+        effective_url,
         stream_id,
         request->heartbeat_timeout_ms(),
         request->decode_interval_ms(),
@@ -100,13 +143,18 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         request->use_shared_mem(),
         std::move(decoder),
         use_gpu_encoder,
-        jpeg_quality);
+        jpeg_quality,
+        hik_ip,
+        hik_port,
+        hik_user,
+        hik_password,
+        hik_channel);
 
     // 双重检查锁定（Double-Checked Locking）
     {
         std::lock_guard<std::shared_mutex> lock(map_mutex_);
         // 使用 url_to_id_ 进行 O(1) 的并发冲突检查
-        auto it = url_to_id_.find(req_url);
+        auto it = url_to_id_.find(effective_url);
         if (it != url_to_id_.end())
         {
             task->stop(); // 释放掉当前线程白建的资源
@@ -126,7 +174,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     response->set_success(true);
     response->set_stream_id(stream_id);
     response->set_message("Stream started successfully");
-    spdlog::info("[START] New Stream ID: {} | URL: {}", stream_id, req_url);
+    spdlog::info("[START] New Stream ID: {} | URL: {}", stream_id, effective_url);
     return grpc::Status::OK;
 }
 
@@ -320,6 +368,16 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
         info->set_heartbeat_timeout_ms(task->getHeartbeatTimeMs());
         info->set_keep_on_failure(task->shouldKeepOnFailure());
 
+        // 海康 SDK 参数回填
+        if (task->getDecoderType() == streamingservice::DECODER_HIK_SDK)
+        {
+            info->set_hik_ip(task->getHikIp());
+            info->set_hik_port(task->getHikPort());
+            info->set_hik_user(task->getHikUser());
+            info->set_hik_password(task->getHikPassword());
+            info->set_hik_channel(task->getHikChannel());
+        }
+
         switch (task->getStatus())
         {
         case StreamStatus::CONNECTED:
@@ -366,6 +424,16 @@ grpc::Status RTSPServiceImpl::ListStreams(grpc::ServerContext *context, const st
         stream_info->set_use_shared_mem(task->usesSharedMemory());
         stream_info->set_heartbeat_timeout_ms(task->getHeartbeatTimeMs());
         stream_info->set_keep_on_failure(task->shouldKeepOnFailure());
+
+        // 海康 SDK 参数回填
+        if (task->getDecoderType() == streamingservice::DECODER_HIK_SDK)
+        {
+            stream_info->set_hik_ip(task->getHikIp());
+            stream_info->set_hik_port(task->getHikPort());
+            stream_info->set_hik_user(task->getHikUser());
+            stream_info->set_hik_password(task->getHikPassword());
+            stream_info->set_hik_channel(task->getHikChannel());
+        }
     }
     return grpc::Status::OK;
 }

@@ -35,7 +35,12 @@ public:
                bool use_shared_mem,
                std::unique_ptr<IVideoDecoder> decoder,
                bool use_gpu_encoder,
-               int jpeg_quality);
+               int jpeg_quality,
+               const std::string &hik_ip = "",
+               int hik_port = 0,
+               const std::string &hik_user = "",
+               const std::string &hik_password = "",
+               int hik_channel = 0);
 
     ~StreamTask();
 
@@ -61,6 +66,13 @@ public:
     bool usesSharedMemory() const { return use_shared_mem_; }
     int getHeartbeatTimeMs() const { return heartbeat_timeout_ms_; }
     bool onlyKeyFrames() const { return decoder_->onlyKeyFrames(); }
+
+    // 海康 SDK 参数（仅 DECODER_HIK_SDK 有效）
+    const std::string &getHikIp() const { return hik_ip_; }
+    int getHikPort() const { return hik_port_; }
+    const std::string &getHikUser() const { return hik_user_; }
+    const std::string &getHikPassword() const { return hik_password_; }
+    int getHikChannel() const { return hik_channel_; }
 
     // 条件变量等待下一帧（零拷贝）
     bool waitForNextFrame(std::shared_ptr<std::string> &out_buffer, uint64_t &current_seq, int timeout_ms);
@@ -102,6 +114,13 @@ private:
     bool use_shared_mem_;
     int gpu_id_ = -1;
     cudaStream_t cuda_stream_ = nullptr; // 每路流独立的 CUDA Stream
+
+    // 海康 SDK 参数（仅 DECODER_HIK_SDK 有效）
+    std::string hik_ip_;
+    int hik_port_ = 0;
+    std::string hik_user_;
+    std::string hik_password_;
+    int hik_channel_ = 0;
 
     std::unique_ptr<IVideoDecoder> decoder_;
     bool use_gpu_encoder_ = false;

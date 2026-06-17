@@ -24,7 +24,13 @@ RUN apt-get update && apt-get install -y \
 # 3. 配置 nvcuvid 软链接 (确保运行时能找到驱动库)
 # RUN ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/lib/x86_64-linux-gnu/libnvcuvid.so
 
-# 4. 拷贝你的编译好的二进制文件
+# 4. 拷贝海康 SDK 到镜像中（运行时依赖）
+# 注意：sdk/ 目录默认在 .gitignore 中，构建前请确保本地已放置 SDK
+COPY sdk/hikvision /opt/hikvision
+ENV LD_LIBRARY_PATH=/opt/hikvision/hik_libs:/opt/hikvision/hik_libs/HCNetSDKCom:${LD_LIBRARY_PATH}
+RUN ldconfig /opt/hikvision/hik_libs /opt/hikvision/hik_libs/HCNetSDKCom
+
+# 5. 拷贝你的编译好的二进制文件
 WORKDIR /app
 COPY build/rtsp_server /app/rtsp_server
 COPY entrypoint.sh /app/entrypoint.sh
