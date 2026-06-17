@@ -427,11 +427,11 @@ def _parse_hik_url(rtsp_url: str) -> Optional[Dict]:
             return None
         channel = int(path.split("/")[1])
         return {
-            "hik_ip": parsed.hostname or "",
-            "hik_port": parsed.port or 8000,
-            "hik_user": parsed.username or "",
-            "hik_password": parsed.password or "",
-            "hik_channel": channel,
+            "ip": parsed.hostname or "",
+            "port": parsed.port or 8000,
+            "user": parsed.username or "",
+            "password": parsed.password or "",
+            "channel": channel,
         }
     except Exception:
         return None
@@ -515,12 +515,7 @@ class _BaseRTSPClient:
                      gpu_id: int = 0,
                      keep_on_failure: bool = False,
                      use_shared_mem: bool = False,
-                     only_key_frames: bool = False,
-                     hik_ip: str = "",
-                     hik_port: int = 8000,
-                     hik_user: str = "",
-                     hik_password: str = "",
-                     hik_channel: int = 0) -> Optional[str]:
+                     only_key_frames: bool = False) -> Optional[str]:
         if not self._ensure_stub():
             logger.error("未连接到服务器")
             return None
@@ -529,20 +524,12 @@ class _BaseRTSPClient:
             # 海康模式：URL 是 hik://... 或显式指定 HIK_SDK 时触发
             is_hik_url = rtsp_url.startswith("hik://")
             is_hik_mode = is_hik_url or (decoder_type == DECODER_HIK_SDK)
-            if is_hik_mode:
-                has_explicit = hik_ip and hik_user and hik_password and hik_channel > 0
-                if not has_explicit:
-                    parsed = _parse_hik_url(rtsp_url)
-                    if parsed:
-                        hik_ip = parsed["hik_ip"]
-                        hik_port = parsed["hik_port"]
-                        hik_user = parsed["hik_user"]
-                        hik_password = parsed["hik_password"]
-                        hik_channel = parsed["hik_channel"]
 
             extra_info = ""
             if is_hik_mode:
-                extra_info = f", HIK: {hik_user}@{hik_ip}:{hik_port}/ch{hik_channel}"
+                parsed = _parse_hik_url(rtsp_url)
+                if parsed:
+                    extra_info = f", HIK: {parsed['user']}@{parsed['ip']}:{parsed['port']}/ch{parsed['channel']}"
             logger.info(
                 f"正在启动流: {rtsp_url} "
                 f"(解码器: {DECODER_NAMES.get(decoder_type, 'Unknown')}, "
@@ -562,12 +549,7 @@ class _BaseRTSPClient:
                 gpu_id=gpu_id,
                 keep_on_failure=keep_on_failure,
                 use_shared_mem=use_shared_mem,
-                only_key_frames=only_key_frames,
-                hik_ip=hik_ip,
-                hik_port=hik_port,
-                hik_user=hik_user,
-                hik_password=hik_password,
-                hik_channel=hik_channel
+                only_key_frames=only_key_frames
             )
             resp = self._stub.StartStream(req, timeout=10)
 
@@ -774,25 +756,8 @@ class RTSPClient(_BaseRTSPClient):
                      gpu_id: int = 0,
                      keep_on_failure: bool = False,
                      use_shared_mem: bool = False,
-                     only_key_frames: bool = False,
-                     hik_ip: str = "",
-                     hik_port: int = 8000,
-                     hik_user: str = "",
-                     hik_password: str = "",
-                     hik_channel: int = 0) -> Optional[str]:
+                     only_key_frames: bool = False) -> Optional[str]:
         """启动流并缓存启动参数，用于服务端重启后的自动恢复"""
-        # 海康模式：URL 是 hik://... 或显式指定 HIK_SDK 时触发
-        is_hik_url = rtsp_url.startswith("hik://")
-        is_hik_mode = is_hik_url or (decoder_type == DECODER_HIK_SDK)
-        if is_hik_mode and not (hik_ip and hik_user and hik_password and hik_channel > 0):
-            parsed = _parse_hik_url(rtsp_url)
-            if parsed:
-                hik_ip = parsed["hik_ip"]
-                hik_port = parsed["hik_port"]
-                hik_user = parsed["hik_user"]
-                hik_password = parsed["hik_password"]
-                hik_channel = parsed["hik_channel"]
-
         stream_id = super().start_stream(
             rtsp_url=rtsp_url,
             heartbeat_timeout_ms=heartbeat_timeout_ms,
@@ -801,12 +766,7 @@ class RTSPClient(_BaseRTSPClient):
             gpu_id=gpu_id,
             keep_on_failure=keep_on_failure,
             use_shared_mem=use_shared_mem,
-            only_key_frames=only_key_frames,
-            hik_ip=hik_ip,
-            hik_port=hik_port,
-            hik_user=hik_user,
-            hik_password=hik_password,
-            hik_channel=hik_channel
+            only_key_frames=only_key_frames
         )
         if stream_id:
             self._stream_params[stream_id] = {
@@ -818,11 +778,6 @@ class RTSPClient(_BaseRTSPClient):
                 "keep_on_failure": keep_on_failure,
                 "use_shared_mem": use_shared_mem,
                 "only_key_frames": only_key_frames,
-                "hik_ip": hik_ip,
-                "hik_port": hik_port,
-                "hik_user": hik_user,
-                "hik_password": hik_password,
-                "hik_channel": hik_channel,
             }
             self._stream_id_map[stream_id] = stream_id
         return stream_id

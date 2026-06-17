@@ -35,12 +35,7 @@ public:
                bool use_shared_mem,
                std::unique_ptr<IVideoDecoder> decoder,
                bool use_gpu_encoder,
-               int jpeg_quality,
-               const std::string &hik_ip = "",
-               int hik_port = 0,
-               const std::string &hik_user = "",
-               const std::string &hik_password = "",
-               int hik_channel = 0);
+               int jpeg_quality);
 
     ~StreamTask();
 
@@ -72,13 +67,6 @@ public:
     int getHeartbeatTimeMs() const { return heartbeat_timeout_ms_; }
     bool onlyKeyFrames() const { return decoder_->onlyKeyFrames(); }
 
-    // 海康 SDK 参数（仅 DECODER_HIK_SDK 有效）
-    const std::string &getHikIp() const { return hik_ip_; }
-    int getHikPort() const { return hik_port_; }
-    const std::string &getHikUser() const { return hik_user_; }
-    const std::string &getHikPassword() const { return hik_password_; }
-    int getHikChannel() const { return hik_channel_; }
-
     // 条件变量等待下一帧（零拷贝）
     bool waitForNextFrame(std::shared_ptr<std::string> &out_buffer, uint64_t &current_seq, int timeout_ms);
 
@@ -90,12 +78,7 @@ public:
     void switchDecoder(int decoder_type,
                        std::unique_ptr<IVideoDecoder> decoder,
                        const std::string &new_url,
-                       bool use_gpu_encoder,
-                       const std::string &hik_ip = "",
-                       int hik_port = 0,
-                       const std::string &hik_user = "",
-                       const std::string &hik_password = "",
-                       int hik_channel = 0);
+                       bool use_gpu_encoder);
     int64_t getFrameSequence() const { return static_cast<int64_t>(frame_seq_.load()); }
 
 private:
@@ -127,11 +110,6 @@ private:
     std::atomic<bool> decoder_changed_{false};
     int pending_decoder_type_ = 0;
     bool pending_use_gpu_encoder_ = false;
-    std::string pending_hik_ip_;
-    int pending_hik_port_ = 0;
-    std::string pending_hik_user_;
-    std::string pending_hik_password_;
-    int pending_hik_channel_ = 0;
     std::string stream_id_;
     int heartbeat_timeout_ms_;
     int decode_interval_ms_;
@@ -144,13 +122,6 @@ private:
     int saved_decoder_type_ = 0;
     int saved_gpu_id_ = -1;
     cudaStream_t cuda_stream_ = nullptr; // 每路流独立的 CUDA Stream
-
-    // 海康 SDK 参数（仅 DECODER_HIK_SDK 有效）
-    std::string hik_ip_;
-    int hik_port_ = 0;
-    std::string hik_user_;
-    std::string hik_password_;
-    int hik_channel_ = 0;
 
     std::unique_ptr<IVideoDecoder> decoder_;
     bool use_gpu_encoder_ = false;

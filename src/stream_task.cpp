@@ -55,12 +55,7 @@ StreamTask::StreamTask(const std::string &url,
                        bool use_shared_mem,
                        std::unique_ptr<IVideoDecoder> decoder,
                        bool use_gpu_encoder,
-                       int jpeg_quality,
-                       const std::string &hik_ip,
-                       int hik_port,
-                       const std::string &hik_user,
-                       const std::string &hik_password,
-                       int hik_channel)
+                       int jpeg_quality)
     : url_(url),
       stream_id_(stream_id),
       heartbeat_timeout_ms_(heartbeat_timeout_ms),
@@ -73,12 +68,7 @@ StreamTask::StreamTask(const std::string &url,
       use_shared_mem_(use_shared_mem),
       decoder_(std::move(decoder)),
       use_gpu_encoder_(use_gpu_encoder),
-      jpeg_quality_(jpeg_quality),
-      hik_ip_(hik_ip),
-      hik_port_(hik_port),
-      hik_user_(hik_user),
-      hik_password_(hik_password),
-      hik_channel_(hik_channel)
+      jpeg_quality_(jpeg_quality)
 {
     // 初始化内存池
     frame_pool_ = FrameMemoryPool::create(3 * 1024 * 1024);
@@ -317,11 +307,6 @@ void StreamTask::stepIO()
         url_ = pending_url_;
         decoder_type_ = pending_decoder_type_;
         use_gpu_encoder_ = pending_use_gpu_encoder_;
-        hik_ip_ = pending_hik_ip_;
-        hik_port_ = pending_hik_port_;
-        hik_user_ = pending_hik_user_;
-        hik_password_ = pending_hik_password_;
-        hik_channel_ = pending_hik_channel_;
 
         if (decoder_)
         {
@@ -702,12 +687,7 @@ void StreamTask::updateUrl(const std::string &new_url)
 void StreamTask::switchDecoder(int decoder_type,
                                std::unique_ptr<IVideoDecoder> decoder,
                                const std::string &new_url,
-                               bool use_gpu_encoder,
-                               const std::string &hik_ip,
-                               int hik_port,
-                               const std::string &hik_user,
-                               const std::string &hik_password,
-                               int hik_channel)
+                               bool use_gpu_encoder)
 {
     std::lock_guard<std::mutex> lock(decoder_mutex_);
     if (!decoder)
@@ -720,11 +700,6 @@ void StreamTask::switchDecoder(int decoder_type,
     pending_decoder_type_ = decoder_type;
     pending_use_gpu_encoder_ = use_gpu_encoder;
     pending_url_ = new_url;
-    pending_hik_ip_ = hik_ip;
-    pending_hik_port_ = hik_port;
-    pending_hik_user_ = hik_user;
-    pending_hik_password_ = hik_password;
-    pending_hik_channel_ = hik_channel;
     decoder_changed_ = true;
     spdlog::info("StreamTask decoder switch scheduled: {} -> {}, url: {}",
                  decoder_type_, pending_decoder_type_, new_url);

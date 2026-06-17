@@ -44,39 +44,23 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     int gpu_id = request->gpu_id();
     bool only_key_frames = request->only_key_frames();
 
-    // 海康 SDK 模式：校验参数并构造内部 URL（用于去重和 decoder open）
-    // 支持两种方式触发：1) decoder_type == HIK_SDK；2) rtsp_url 是 hik://... 格式
-    // 后者允许客户端统一用 decoder_type 指定 RTSP 解码参数，URL 决定实际走海康 SDK
+    // 海康 SDK 模式：统一通过 rtsp_url 识别 hik://... 格式
+    // decoder_type == HIK_SDK 或 URL 以 hik:// 开头都会触发海康 SDK
     std::string effective_url = req_url;
-    std::string hik_ip = request->hik_ip();
-    int hik_port = request->hik_port() > 0 ? request->hik_port() : 8000;
-    std::string hik_user = request->hik_user();
-    std::string hik_password = request->hik_password();
-    int hik_channel = request->hik_channel();
-
     HikUrlInfo hik_info = parseHikUrl(req_url);
     bool use_hik_sdk = (decoder_type == streamingservice::DECODER_HIK_SDK) || hik_info.valid;
 
     if (use_hik_sdk)
     {
-        bool has_explicit = !hik_ip.empty() && !hik_user.empty() && !hik_password.empty() && hik_channel > 0;
-        if (!has_explicit)
+        if (!hik_info.valid)
         {
-            if (!hik_info.valid)
-            {
-                response->set_success(false);
-                response->set_message("HIK_SDK decoder requires either hik_ip/hik_user/hik_password/hik_channel fields or a rtsp_url like hik://user:pass@ip:port/channel/101");
-                return grpc::Status::OK;
-            }
-            hik_ip = hik_info.ip;
-            hik_port = hik_info.port;
-            hik_user = hik_info.user;
-            hik_password = hik_info.password;
-            hik_channel = hik_info.channel;
+            response->set_success(false);
+            response->set_message("HIK_SDK decoder requires rtsp_url like hik://user:pass@ip:port/channel/101");
+            return grpc::Status::OK;
         }
-        effective_url = "hik://" + hik_user + ":" + hik_password +
-                        "@" + hik_ip + ":" + std::to_string(hik_port) +
-                        "/channel/" + std::to_string(hik_channel);
+        effective_url = "hik://" + hik_info.user + ":" + hik_info.password +
+                        "@" + hik_info.ip + ":" + std::to_string(hik_info.port) +
+                        "/channel/" + std::to_string(hik_info.channel);
     }
 
     // 使用 url_to_id_ 实现 O(1) 的快速查找，替代原来的 O(N) 遍历
@@ -148,12 +132,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         request->use_shared_mem(),
         std::move(decoder),
         use_gpu_encoder,
-        jpeg_quality,
-        hik_ip,
-        hik_port,
-        hik_user,
-        hik_password,
-        hik_channel);
+        jpeg_quality);
 
     // 海康 SDK 模式下保存用户指定的 RTSP 解码参数，便于后续切回 RTSP 时恢复
     if (use_hik_sdk)
@@ -380,16 +359,6 @@ grpc::Status RTSPServiceImpl::CheckStream(grpc::ServerContext *context, const st
         info->set_heartbeat_timeout_ms(task->getHeartbeatTimeMs());
         info->set_keep_on_failure(task->shouldKeepOnFailure());
 
-        // 海康 SDK 参数回填
-        if (task->getDecoderType() == streamingservice::DECODER_HIK_SDK)
-        {
-            info->set_hik_ip(task->getHikIp());
-            info->set_hik_port(task->getHikPort());
-            info->set_hik_user(task->getHikUser());
-            info->set_hik_password(task->getHikPassword());
-            info->set_hik_channel(task->getHikChannel());
-        }
-
         switch (task->getStatus())
         {
         case StreamStatus::CONNECTED:
@@ -437,15 +406,6 @@ grpc::Status RTSPServiceImpl::ListStreams(grpc::ServerContext *context, const st
         stream_info->set_heartbeat_timeout_ms(task->getHeartbeatTimeMs());
         stream_info->set_keep_on_failure(task->shouldKeepOnFailure());
 
-        // 海康 SDK 参数回填
-        if (task->getDecoderType() == streamingservice::DECODER_HIK_SDK)
-        {
-            stream_info->set_hik_ip(task->getHikIp());
-            stream_info->set_hik_port(task->getHikPort());
-            stream_info->set_hik_user(task->getHikUser());
-            stream_info->set_hik_password(task->getHikPassword());
-            stream_info->set_hik_channel(task->getHikChannel());
-        }
     }
     return grpc::Status::OK;
 }
@@ -515,20 +475,12 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
     // 解析新 URL，判断是否为海康协议
     HikUrlInfo hik_info = parseHikUrl(new_url);
     std::string effective_url = new_url;
-    std::string hik_ip, hik_user, hik_password;
-    int hik_port = 8000;
-    int hik_channel = 1;
 
     if (hik_info.valid)
     {
-        hik_ip = hik_info.ip;
-        hik_port = hik_info.port;
-        hik_user = hik_info.user;
-        hik_password = hik_info.password;
-        hik_channel = hik_info.channel;
-        effective_url = "hik://" + hik_user + ":" + hik_password +
-                        "@" + hik_ip + ":" + std::to_string(hik_port) +
-                        "/channel/" + std::to_string(hik_channel);
+        effective_url = "hik://" + hik_info.user + ":" + hik_info.password +
+                        "@" + hik_info.ip + ":" + std::to_string(hik_info.port) +
+                        "/channel/" + std::to_string(hik_info.channel);
     }
 
     int target_decoder_type = streamingservice::DECODER_CPU_FFMPEG;
@@ -602,12 +554,7 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
         task->switchDecoder(target_decoder_type,
                             std::move(new_decoder),
                             effective_url,
-                            use_gpu_encoder,
-                            hik_ip,
-                            hik_port,
-                            hik_user,
-                            hik_password,
-                            hik_channel);
+                            use_gpu_encoder);
     }
     else
     {

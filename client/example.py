@@ -670,45 +670,20 @@ def example_save_images(output_dir: Optional[str] = None,
 def example_hik_sdk():
     """
     示例 12: 通过海康 SDK 直接抓图。
-    "rtsp://admin:lww123456@172.16.22.16:554/Streaming/Channels/101"
-    支持两种传参方式：
-      1. 环境变量 HIK_URL，例如 hik://admin:lww123456@172.16.22.16:8000/channel/101
-      2. 环境变量 HIK_IP, HIK_USER, HIK_PASSWORD, HIK_CHANNEL
+    统一使用 hik:// URL 传参：
+      环境变量 HIK_URL，例如 hik://admin:lww123456@172.16.22.16:8000/channel/101
     """
     print("\n" + "=" * 60)
     print("示例 12: 海康 SDK 直接抓图")
     print("=" * 60)
 
     hik_url = os.environ.get("HIK_URL", "hik://admin:lww123456@172.16.22.16:8000/channel/33")
-    if hik_url:
-        print(f"使用 HIK_URL: {hik_url}")
-        rtsp_url = hik_url
-        hik_ip = ""
-        hik_port = 8000
-        hik_user = ""
-        hik_password = ""
-        hik_channel = 0
-    else:
-        hik_ip = os.environ.get("HIK_IP", "")
-        hik_port = int(os.environ.get("HIK_PORT", "8000"))
-        hik_user = os.environ.get("HIK_USER", "")
-        hik_password = os.environ.get("HIK_PASSWORD", "")
-        hik_channel = int(os.environ.get("HIK_CHANNEL", "1"))
-        rtsp_url = ""
-
-        if not hik_ip or not hik_user or not hik_password:
-            print("请设置环境变量 HIK_URL 或 HIK_IP/HIK_USER/HIK_PASSWORD")
-            return
+    print(f"使用 HIK_URL: {hik_url}")
 
     with RTSPClient(SERVER) as client:
         stream_id = client.start_stream(
-            rtsp_url=rtsp_url,
+            rtsp_url=hik_url,
             decoder_type=DECODER_HIK_SDK,
-            hik_ip=hik_ip,
-            hik_port=hik_port,
-            hik_user=hik_user,
-            hik_password=hik_password,
-            hik_channel=hik_channel,
         )
         if not stream_id:
             print("启动海康流失败")
@@ -793,6 +768,7 @@ def example_switch_rtsp_hik():
                     if frame is not None:
                         saved_count += 1
                         timestamp = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                        print(datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S.%f"))
                         cv2.imwrite(f"images/hik_frame_{i:03d}_{timestamp}.jpg", frame)
                     else:
                         print(f"  海康第 {i + 1}/5 帧无数据")
