@@ -138,6 +138,11 @@ private:
     // 保护 decoder_ 的互斥锁（防止多线程重入或与 stop 冲突）
     std::mutex decoder_mutex_;
 
+    // 保护 SHM 清理与计算任务之间的竞态：stop() 必须等待所有 stepCompute 完成
+    std::atomic<int> compute_in_flight_{0};
+    std::mutex compute_done_mutex_;
+    std::condition_variable compute_done_cv_;
+
     // 每路流独立 IO 线程
     std::thread io_thread_;
     std::mutex io_mutex_;

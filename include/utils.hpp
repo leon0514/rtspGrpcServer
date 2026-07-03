@@ -7,7 +7,7 @@ inline std::string generate_uuid() {
     static std::mt19937 gen(rd());
     static std::uniform_int_distribution<> dis(0, 15);
     static const char* digits = "0123456789abcdef";
-    std::string res;
+    std::string res = "rtsp_grpc_";
     for (int i = 0; i < 16; i++) res += digits[dis(gen)];
     return res;
 }

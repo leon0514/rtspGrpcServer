@@ -2,6 +2,10 @@
 
 ldconfig
 
+# 0. 清理上一次运行遗留的共享内存对象，防止服务崩溃/重启后 /dev/shm 累积导致 ENOSPC
+#    stream_id 现在统一带 rtsp_grpc_ 前缀
+rm -f /dev/shm/rtsp_grpc_* /dev/shm/sem.rtsp_grpc_*_notify
+
 # 0. 确保海康 SDK 库可被动态加载（Dockerfile 中已通过 ENV 设置，此处作为兜底）
 export LD_LIBRARY_PATH=/opt/hikvision/hik_libs:/opt/hikvision/hik_libs/HCNetSDKCom:${LD_LIBRARY_PATH}
 

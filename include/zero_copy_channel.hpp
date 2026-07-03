@@ -149,7 +149,8 @@ public:
 
     bool write_frame_mat(const cv::Mat& frame, uint64_t timestamp)
     {
-        if (!layout_ || frame.empty())
+        std::unique_lock<std::mutex> lock(cleanup_mutex_);
+        if (cleaned_.load() || !layout_ || frame.empty())
         {
             return false;
         }
@@ -211,7 +212,8 @@ public:
     // 核心修改：支持动态宽高和大小
     void write_frame(const uint8_t *src_data, uint64_t size, uint64_t w, uint64_t h, uint64_t ts)
     {
-        if (!layout_ || size > MAX_SHM_FRAME_SIZE)
+        std::unique_lock<std::mutex> lock(cleanup_mutex_);
+        if (cleaned_.load() || !layout_ || size > MAX_SHM_FRAME_SIZE)
             return;
 
         uint64_t count = write_count_++;
@@ -249,9 +251,20 @@ public:
 
     void cleanup()
     {
+        std::lock_guard<std::mutex> lock(cleanup_mutex_);
+        if (cleaned_.exchange(true))
+        {
+            return;
+        }
+
+        spdlog::info("[ZeroCopyChannel] Cleaning up SHM: /{} (role={})", stream_id_, role_);
+
         if (layout_)
         {
-            munmap(layout_, sizeof(ShmLayout));
+            if (munmap(layout_, sizeof(ShmLayout)) != 0)
+            {
+                spdlog::warn("[ZeroCopyChannel] munmap failed for /{}: {} ({})", stream_id_, errno, strerror(errno));
+            }
             layout_ = nullptr;
         }
         if (shm_fd_ >= 0)
@@ -262,7 +275,18 @@ public:
         // 只有生产者才有权限/义务从内核中删除共享内存对象
         if (role_ == 0)
         {
-            shm_unlink(("/" + stream_id_).c_str());
+            std::string shm_path = "/" + stream_id_;
+            if (shm_unlink(shm_path.c_str()) != 0)
+            {
+                if (errno != ENOENT)
+                {
+                    spdlog::warn("[ZeroCopyChannel] shm_unlink failed for /{}: {} ({})", stream_id_, errno, strerror(errno));
+                }
+            }
+            else
+            {
+                spdlog::info("[ZeroCopyChannel] shm_unlink succeeded: /{}", stream_id_);
+            }
         }
         // 删除通知信号量（同样只有生产者创建，因此只由生产者删除）
         if (notify_sem_)
@@ -270,8 +294,18 @@ public:
             sem_close(notify_sem_);
             if (role_ == 0)
             {
-                sem_unlink(("/" + stream_id_ + "_notify").c_str());
-                spdlog::info("[ZeroCopyChannel] Notify semaphore cleaned up: /{}_notify", stream_id_);
+                std::string sem_name = "/" + stream_id_ + "_notify";
+                if (sem_unlink(sem_name.c_str()) != 0)
+                {
+                    if (errno != ENOENT)
+                    {
+                        spdlog::warn("[ZeroCopyChannel] sem_unlink failed for /{}_notify: {} ({})", stream_id_, errno, strerror(errno));
+                    }
+                }
+                else
+                {
+                    spdlog::info("[ZeroCopyChannel] sem_unlink succeeded: /{}_notify", stream_id_);
+                }
             }
             notify_sem_ = nullptr;
         }
@@ -284,4 +318,6 @@ private:
     ShmLayout *layout_ = nullptr;
     uint64_t write_count_ = 0;
     sem_t *notify_sem_ = nullptr;
+    std::mutex cleanup_mutex_;
+    std::atomic<bool> cleaned_{false};
 };

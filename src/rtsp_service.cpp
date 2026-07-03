@@ -6,6 +6,7 @@
 #include "utils.hpp"
 #include "task_scheduler.hpp"
 #include <malloc.h>
+#include <sys/mman.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/ostr.h>
 
@@ -15,6 +16,8 @@
 
 RTSPServiceImpl::RTSPServiceImpl() : manager_running_(true)
 {
+    // 启动时清理上一次运行遗留的孤儿 SHM，防止服务崩溃/重启后 /dev/shm 累积
+    cleanupOrphanedShm();
     cleanup_thread_ = std::thread(&RTSPServiceImpl::cleanupLoop, this);
 }
 
@@ -61,6 +64,19 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
         effective_url = "hik://" + hik_info.user + ":" + hik_info.password +
                         "@" + hik_info.ip + ":" + std::to_string(hik_info.port) +
                         "/channel/" + std::to_string(hik_info.channel);
+    }
+
+    // 校验心跳超时：0 表示非法（会导致永远无法自动清理），过大则容易耗尽 SHM
+    int effective_heartbeat_ms = request->heartbeat_timeout_ms();
+    if (effective_heartbeat_ms <= 0)
+    {
+        effective_heartbeat_ms = 100000; // 默认 100 秒
+    }
+    constexpr int MAX_HEARTBEAT_MS = 3600000; // 1 小时上限
+    if (effective_heartbeat_ms > MAX_HEARTBEAT_MS)
+    {
+        effective_heartbeat_ms = MAX_HEARTBEAT_MS;
+        spdlog::warn("[StartStream] heartbeat_timeout_ms too large, capped at {}", MAX_HEARTBEAT_MS);
     }
 
     // 使用 url_to_id_ 实现 O(1) 的快速查找，替代原来的 O(N) 遍历
@@ -124,7 +140,7 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
     auto task = std::make_shared<StreamTask>(
         effective_url,
         stream_id,
-        request->heartbeat_timeout_ms(),
+        effective_heartbeat_ms,
         request->decode_interval_ms(),
         static_cast<int>(actual_decoder_type),
         gpu_id,
@@ -155,9 +171,9 @@ grpc::Status RTSPServiceImpl::StartStream(grpc::ServerContext *context, const st
             return grpc::Status::OK;
         }
 
-        // 必须同时更新两个 Map
+        // 必须同时更新两个 Map；统一使用 effective_url 作为键，避免海康 URL 重复建流
         streams_[stream_id] = task;
-        url_to_id_[req_url] = stream_id;
+        url_to_id_[effective_url] = stream_id;
     }
 
     task->start();
@@ -410,51 +426,118 @@ grpc::Status RTSPServiceImpl::ListStreams(grpc::ServerContext *context, const st
     return grpc::Status::OK;
 }
 
+void RTSPServiceImpl::cleanupOrphanedShm()
+{
+    // Linux 下 POSIX shared memory 对象通常映射在 /dev/shm 目录
+    constexpr const char *SHM_DIR = "/dev/shm";
+    constexpr const char *SHM_PATTERN = "rtsp_grpc_*";
+    constexpr const char *SEM_PATTERN = "sem.rtsp_grpc_*_notify";
+
+    DIR *dir = opendir(SHM_DIR);
+    if (!dir)
+    {
+        spdlog::warn("[RTSPServiceImpl] Failed to open {} for orphan SHM cleanup: {} ({})", SHM_DIR, errno, strerror(errno));
+        return;
+    }
+
+    int unlinked_count = 0;
+    struct dirent *entry = nullptr;
+    while ((entry = readdir(dir)) != nullptr)
+    {
+        if (fnmatch(SHM_PATTERN, entry->d_name, 0) == 0 ||
+            fnmatch(SEM_PATTERN, entry->d_name, 0) == 0)
+        {
+            // shm_unlink 只需要对象名（即 /dev/shm 下的文件名）
+            if (shm_unlink(entry->d_name) == 0)
+            {
+                spdlog::info("[RTSPServiceImpl] Unlinked orphan SHM object: {}", entry->d_name);
+                unlinked_count++;
+            }
+            else
+            {
+                if (errno != ENOENT)
+                {
+                    spdlog::warn("[RTSPServiceImpl] Failed to unlink orphan SHM object {}: {} ({})", entry->d_name, errno, strerror(errno));
+                }
+            }
+        }
+    }
+    closedir(dir);
+
+    if (unlinked_count > 0)
+    {
+        spdlog::warn("[RTSPServiceImpl] Cleaned up {} orphan SHM objects from previous run", unlinked_count);
+    }
+}
+
 void RTSPServiceImpl::cleanupLoop()
 {
     while (manager_running_)
     {
         std::this_thread::sleep_for(std::chrono::seconds(5));
 
-        std::vector<std::shared_ptr<StreamTask>> tasks_to_stop;
-
+        // 异常保护：任何单个 task 的清理异常都不能终止整个清理循环，否则 SHM 会泄漏
+        try
         {
-            std::lock_guard<std::shared_mutex> lock(map_mutex_);
-            // spdlog::info("Current active streams: {}", streams_.size());
-            for (auto it = streams_.begin(); it != streams_.end();)
+            std::vector<std::shared_ptr<StreamTask>> tasks_to_stop;
+
             {
-                bool should_remove = false;
-                std::string reason;
+                std::lock_guard<std::shared_mutex> lock(map_mutex_);
+                // spdlog::info("Current active streams: {}", streams_.size());
+                for (auto it = streams_.begin(); it != streams_.end();)
+                {
+                    bool should_remove = false;
+                    std::string reason;
 
-                if (it->second->isStopped() && !it->second->shouldKeepOnFailure())
-                {
-                    should_remove = true;
-                    reason = "STOPPED";
-                }
-                else if (it->second->isTimeout())
-                {
-                    should_remove = true;
-                    reason = "TIMEOUT";
-                }
+                    if (it->second->isStopped() && !it->second->shouldKeepOnFailure())
+                    {
+                        should_remove = true;
+                        reason = "STOPPED";
+                    }
+                    else if (it->second->isTimeout())
+                    {
+                        should_remove = true;
+                        reason = "TIMEOUT";
+                    }
 
-                if (should_remove)
-                {
-                    spdlog::info("[{}] Auto-cleaning stream ID: {}", reason, it->first);
-                    tasks_to_stop.push_back(it->second);
-                    std::string url = it->second->getUrl();
-                    url_to_id_.erase(url);
-                    it = streams_.erase(it);
+                    if (should_remove)
+                    {
+                        spdlog::info("[{}] Auto-cleaning stream ID: {}", reason, it->first);
+                        tasks_to_stop.push_back(it->second);
+                        std::string url = it->second->getUrl();
+                        url_to_id_.erase(url);
+                        it = streams_.erase(it);
+                    }
+                    else
+                    {
+                        ++it;
+                    }
                 }
-                else
+            }
+
+            for (auto &task : tasks_to_stop)
+            {
+                try
                 {
-                    ++it;
+                    task->stop();
+                }
+                catch (const std::exception &e)
+                {
+                    spdlog::error("[cleanupLoop] task->stop() exception: {}", e.what());
+                }
+                catch (...)
+                {
+                    spdlog::error("[cleanupLoop] task->stop() unknown exception");
                 }
             }
         }
-
-        for (auto &task : tasks_to_stop)
+        catch (const std::exception &e)
         {
-            task->stop();
+            spdlog::error("[cleanupLoop] outer exception: {}", e.what());
+        }
+        catch (...)
+        {
+            spdlog::error("[cleanupLoop] outer unknown exception");
         }
         // 🔧 强制命令 jemalloc 立即进行内存收缩 (Purge)
         // 这会告诉 jemalloc：把我所有 Dirty 页面全部交还给 OS

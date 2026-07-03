@@ -10,6 +10,8 @@ import struct
 import ctypes
 import ctypes.util
 import logging
+import atexit
+import weakref
 from typing import Optional, Tuple, List, Dict, Generator
 
 import cv2
@@ -81,6 +83,23 @@ _DEFAULT_CHANNEL_OPTIONS = [
 def align_up(value: int, alignment: int) -> int:
     """模拟 C++ alignas 内存对齐"""
     return (value + alignment - 1) & ~(alignment - 1)
+
+
+def _cleanup_client_on_exit(client_ref):
+    """atexit 钩子：进程退出时尝试关闭所有 SHM reader，释放 mmap 引用"""
+    client = client_ref()
+    if client is None:
+        return
+    try:
+        logger.debug("[atexit] Cleaning up RTSPClient SHM readers")
+        for reader in list(client._shm_readers.values()):
+            try:
+                reader.close()
+            except Exception:
+                pass
+        client._shm_readers.clear()
+    except Exception:
+        pass
 
 
 CV_DEPTH_TO_NUMPY = {
@@ -721,6 +740,8 @@ class RTSPClient(_BaseRTSPClient):
         self._stream_modes: Dict[str, bool] = {}     # stream_id -> use_shared_mem 缓存
         self._stream_params: Dict[str, dict] = {}     # original_stream_id -> 启动参数
         self._stream_id_map: Dict[str, str] = {}      # original_stream_id -> current_stream_id
+        # 注册进程退出兜底清理：避免客户端异常退出后 mmap 长期占用 tmpfs 空间
+        atexit.register(_cleanup_client_on_exit, weakref.ref(self))
 
     def disconnect(self):
         # 清理所有 SHM 读取器

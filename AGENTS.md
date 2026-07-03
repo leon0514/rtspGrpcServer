@@ -155,7 +155,7 @@ docker run -itd \
   grpc_rtsp_server
 ```
 
-> **关键参数**：挂载 `-v /dev/shm:/dev/shm` 必须开启，否则 Python 客户端无法访问 C++ 端创建的 POSIX 共享内存（`/dev/shm/<stream_id>`）。`--shm-size` 根据摄像头数量调整。
+> **关键参数**：挂载 `-v /dev/shm:/dev/shm` 必须开启，否则 Python 客户端无法访问 C++ 端创建的 POSIX 共享内存（`/dev/shm/rtsp_grpc_<16位十六进制>`）。`--shm-size` 根据摄像头数量调整。
 
 ### Python Proto 生成
 
@@ -257,6 +257,16 @@ python example.py [编号]      # 编号 1-10，或 all 顺序运行全部
 3. 预加载 jemalloc：`LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2`
 4. `docker-compose.yml` 配置 GPU 设备预留、IPC host、共享内存大小
 
+### 共享内存清理与命名
+
+- **命名前缀**：为便于识别和清理，所有共享内存对象（及通知信号量）名称统一带 `rtsp_grpc_` 前缀，例如 `/dev/shm/rtsp_grpc_a1b2c3d4...`、`/dev/shm/sem.rtsp_grpc_a1b2c3d4..._notify`。
+- **启动兜底清理**：
+  - `entrypoint.sh` 在启动服务前会执行 `rm -f /dev/shm/rtsp_grpc_* /dev/shm/sem.rtsp_grpc_*_notify`，清理上一次运行遗留的对象。
+  - `RTSPServiceImpl` 构造函数也会扫描 `/dev/shm` 并 `shm_unlink` 匹配的孤儿对象，作为非 Docker / 直接启动时的兜底。
+- **运行时清理**：流正常停止、心跳超时、`SIGINT/SIGTERM` 退出时都会调用 `ZeroCopyChannel::cleanup()` 进行 `shm_unlink` / `sem_unlink`。
+- **竞态保护**：`StreamTask::stop()` 会等待所有已投递的 `stepCompute` 任务完成后再清理 SHM；`ZeroCopyChannel` 内部通过互斥锁和 `cleaned_` 标志避免 `write_frame` 与 `cleanup` 并发。
+- **心跳上限**：`heartbeat_timeout_ms` 必须大于 0 且不超过 1 小时（3600000 ms），否则会被修正，避免客户端失联后 SHM 长期不回收。
+
 ### CPU-only 部署
 
 - 使用 `Dockerfile.cpu`（多阶段构建，Builder + Runtime）
@@ -291,4 +301,4 @@ python example.py [编号]      # 编号 1-10，或 all 顺序运行全部
 - **Docker 中的海康 SDK**：`Dockerfile` / `Dockerfile.cpu` 会把 `sdk/hikvision` 复制到镜像 `/opt/hikvision`，并通过 `LD_LIBRARY_PATH` 和 `ldconfig` 使其可被 `rtsp_server` 加载。`entrypoint.sh` 也做了兜底导出。
 - **CUDA 架构**：`CMakeLists.txt` 中硬编码了 `75 80 86 89` 四个架构，如需支持新 GPU 需要修改此处。
 - **线程池初始化**：`TaskScheduler` 在 `init()` 中为每个检测到的 GPU 直接创建线程池，避免懒加载带来的数据竞争问题。
-- **心跳机制**：每个流有独立的心跳超时（默认 100 秒），客户端必须定期调用 `GetLatestFrame` / `StreamFrames` / `CheckStream` 保活，否则服务端会自动清理。
+- **心跳机制**：每个流有独立的心跳超时（默认 100 秒，上限 1 小时），客户端必须定期调用 `GetLatestFrame` / `StreamFrames` / `CheckStream` 保活，否则服务端会自动清理。`heartbeat_timeout_ms <= 0` 会被修正为默认值，禁止无限保活。

@@ -5,6 +5,10 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <dirent.h>
+#include <fnmatch.h>
+#include <cerrno>
+#include <cstring>
 #include <grpcpp/grpcpp.h>
 #include "stream_service.grpc.pb.h"
 #include "stream_task.hpp"
@@ -26,6 +30,7 @@ public:
 
 private:
     void cleanupLoop();
+    void cleanupOrphanedShm();
 
     std::shared_mutex map_mutex_;
     std::unordered_map<std::string, std::shared_ptr<StreamTask>> streams_;

@@ -135,6 +135,12 @@ StreamTask::~StreamTask()
     }
     
     // 2. 析构时必须显式清理 SHM（即使 stop() 已经被调用过，cleanup() 是幂等的）
+    //    同样先等待计算任务结束，避免并发清理
+    {
+        std::unique_lock<std::mutex> lock(compute_done_mutex_);
+        compute_done_cv_.wait_for(lock, std::chrono::seconds(5), [this]
+                                  { return compute_in_flight_.load() == 0; });
+    }
     if (shm_channel_)
     {
         shm_channel_->cleanup();
@@ -246,6 +252,14 @@ void StreamTask::stop()
     {
         std::unique_lock<std::mutex> sleep_lock(sleep_mutex_);
         sleep_cv_.notify_all();
+    }
+
+    // 等待所有已投递的计算任务完成，避免 SHM 在 write_frame 中途被 cleanup
+    {
+        std::unique_lock<std::mutex> lock(compute_done_mutex_);
+        compute_done_cv_.wait(lock, [this]
+                              { return compute_in_flight_.load() == 0; });
+        spdlog::info("[StreamTask] All compute tasks finished for {}", url_);
     }
 
     std::shared_ptr<std::string> old_frame_to_release;
@@ -448,6 +462,7 @@ void StreamTask::stepIO()
         // 需要解码：释放锁，将任务派发给计算线程池
         lock.unlock();
         spdlog::debug("[stepIO] Enqueueing stepCompute to pool gpu_id={}", gpu_id_);
+        compute_in_flight_++;
         std::weak_ptr<StreamTask> weak_self = shared_from_this();
         TaskScheduler::instance().getComputePool(gpu_id_).enqueue(
             [weak_self]()
@@ -460,6 +475,12 @@ void StreamTask::stepIO()
                 else
                 {
                     spdlog::warn("[stepCompute] weak_ptr expired, task destroyed before compute");
+                }
+                // 计数器在 lambda 结束时递减，确保 stop() 能等待所有计算任务完成
+                if (auto self = weak_self.lock())
+                {
+                    self->compute_in_flight_--;
+                    self->compute_done_cv_.notify_all();
                 }
             });
     }
