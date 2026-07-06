@@ -15,8 +15,8 @@
 #include <opencv2/opencv.hpp>
 
 // 6 * 2560 * 1440 ≈ 21 MB，足以容纳一帧较大尺寸的 BGR 图像
-constexpr size_t MAX_SHM_FRAME_SIZE = 6 * 2560 * 1440;
-constexpr int SHM_SLOT_COUNT = 8;
+constexpr size_t MAX_SHM_FRAME_SIZE = 3 * 2560 * 1440;
+constexpr int SHM_SLOT_COUNT = 3;
 
 struct alignas(64) ShmMeta
 {

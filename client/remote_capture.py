@@ -178,8 +178,8 @@ class _ShmReader:
         self.ALIGNMENT = 64
         self.UINT64_SIZE = 8
         self.UINT32_SIZE = 4
-        self.MAX_FRAME_BYTES = 6 * 2560 * 1440
-        self.SLOT_COUNT = 8
+        self.MAX_FRAME_BYTES = 3 * 2560 * 1440
+        self.SLOT_COUNT = 3
 
         self.META_DATA_SIZE = 4 * self.UINT64_SIZE + 4 * self.UINT32_SIZE
         self.META_STRUCT_SIZE = align_up(self.META_DATA_SIZE, self.ALIGNMENT)
