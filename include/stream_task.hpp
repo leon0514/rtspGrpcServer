@@ -84,6 +84,11 @@ public:
 private:
     void updateHeartbeat();
 
+    // 重连辅助函数
+    int calculateReconnectDelayMs() const;
+    void markConnectionFailure();
+    bool shouldGiveUpReconnection();
+
     // --- 异步调度逻辑 ---
 
     // 调度下一步操作
@@ -161,7 +166,8 @@ private:
     std::atomic<int64_t> last_access_time_;
 
     // 内部逻辑变量
-    int reconnect_attempts_ = 0;
+    int consecutive_failures_ = 0;
+    std::chrono::steady_clock::time_point first_failure_time_;
     std::chrono::steady_clock::time_point last_encode_time_;
 
     // 优化：休眠控制相关

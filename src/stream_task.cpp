@@ -244,6 +244,8 @@ void StreamTask::start()
     }
 
     stopped_ = false;
+    status_ = StreamStatus::CONNECTING;
+    consecutive_failures_ = 0;
     spdlog::info("StreamTask started: {}", url_);
 
     std::weak_ptr<StreamTask> weak_self = shared_from_this();
@@ -327,6 +329,7 @@ void StreamTask::stop()
     // 6. 状态重置
     status_ = StreamStatus::DISCONNECTED;
     connected_ = false;
+    consecutive_failures_ = 0;
 }
 
 void StreamTask::scheduleNext(int force_delay_ms)
@@ -416,39 +419,37 @@ void StreamTask::stepIO()
     bool need_open = !decoder_->isOpened() || force_reopen_.exchange(false);
     if (need_open)
     {
-        const int max_reconnect_attempts = 5;
-        if (reconnect_attempts_ >= max_reconnect_attempts)
+        // 如果已经离线过久且不要求持续重连，则停止任务
+        if (shouldGiveUpReconnection())
         {
-            if (!keep_on_failure_)
-            {
-                spdlog::error("Max reconnect attempts reached. Stopping task: {}", url_);
-                lock.unlock(); // 尽早释放锁
-                stop();
-                return;
-            }
-            reconnect_attempts_ = 0; // 重置计数，准备下一轮无尽重连
+            spdlog::error("Stream offline too long, stopping task: {}", url_);
+            lock.unlock(); // 尽早释放锁
+            stop();
+            return;
         }
 
-        reconnect_attempts_++;
         status_ = StreamStatus::CONNECTING;
         connected_ = false;
 
-        spdlog::warn("Attempting to open/reconnect {}/{}: {}", reconnect_attempts_, max_reconnect_attempts, url_);
+        spdlog::warn("Attempting to open/reconnect (failures={}): {}", consecutive_failures_, url_);
 
         if (decoder_->open(url_))
         {
             spdlog::info("Connected successfully: {}", url_);
             status_ = StreamStatus::CONNECTED;
-            reconnect_attempts_ = 0;
+            consecutive_failures_ = 0;
             // 连接成功后，重置编码时间，准备立即出第一帧
             last_encode_time_ = std::chrono::steady_clock::now() - std::chrono::hours(1);
         }
         else
         {
             spdlog::warn("Connection attempt failed: {}", url_);
+            markConnectionFailure();
             lock.unlock();
-            // 连接失败，使用定时器延迟 1000ms 后再次触发，不阻塞线程池！
-            scheduleNext(1000);
+            // 连接失败，指数退避后重试，不阻塞线程池
+            int delay_ms = calculateReconnectDelayMs();
+            spdlog::debug("Retry open after {} ms", delay_ms);
+            scheduleNext(delay_ms);
             return;
         }
     }
@@ -458,21 +459,32 @@ void StreamTask::stepIO()
     if (!decoder_->grab())
     {
         spdlog::warn("Frame grab failed: {}", url_);
-        connected_ = false;
+        markConnectionFailure();
+
+        if (shouldGiveUpReconnection())
+        {
+            lock.unlock();
+            stop();
+            return;
+        }
+
         if (decoder_->releaseOnGrabFailure())
         {
             decoder_->release();
         }
         lock.unlock();
 
-        // 抓取失败，退避 50ms 后重试
-        scheduleNext(50);
+        // 抓取失败，指数退避后重试
+        int delay_ms = calculateReconnectDelayMs();
+        spdlog::debug("Retry grab after {} ms", delay_ms);
+        scheduleNext(delay_ms);
         return;
     }
     auto grab_end = std::chrono::steady_clock::now();
 
     connected_ = true;
-    reconnect_attempts_ = 0;
+    status_ = StreamStatus::CONNECTED;
+    consecutive_failures_ = 0;
     last_grab_end_ = grab_end;
 
     // 记录帧到达服务端的时间戳（在 grab 成功时立即记录，比编码完成时间更准确）
@@ -671,6 +683,42 @@ void StreamTask::updateHeartbeat()
     last_access_time_.store(now);
 }
 
+int StreamTask::calculateReconnectDelayMs() const
+{
+    // 指数退避：500ms, 1s, 2s, 4s, 8s, ..., 上限 30s
+    if (consecutive_failures_ <= 0)
+        return 100;
+    int shift = std::min(consecutive_failures_ - 1, 6); // 2^6 = 64
+    int delay = 500 * (1 << shift);
+    return std::min(delay, 30000);
+}
+
+void StreamTask::markConnectionFailure()
+{
+    connected_ = false;
+    // 失败不代表彻底断开，服务端仍在指数退避重连，因此状态保持 CONNECTING。
+    // 只有 shouldGiveUpReconnection() 决定停止时，stop() 才会把状态设为 DISCONNECTED。
+    status_ = StreamStatus::CONNECTING;
+    consecutive_failures_++;
+    if (consecutive_failures_ == 1)
+    {
+        first_failure_time_ = std::chrono::steady_clock::now();
+    }
+}
+
+bool StreamTask::shouldGiveUpReconnection()
+{
+    if (keep_on_failure_)
+        return false;
+    if (consecutive_failures_ <= 0)
+        return false;
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - first_failure_time_)
+                          .count();
+    constexpr int64_t MAX_OFFLINE_MS = 60000; // 60s
+    return elapsed_ms > MAX_OFFLINE_MS;
+}
+
 bool StreamTask::getLatestEncodedFrame(std::shared_ptr<std::string> &out_buffer)
 {
     updateHeartbeat();
@@ -743,6 +791,7 @@ void StreamTask::updateUrl(const std::string &new_url)
         url_changed_ = true; // 原子标记 URL 已经改变，等待 stepIO() 循环自然处理
         spdlog::info("StreamTask URL updated: {} -> {}", url_, new_url);
         status_ = StreamStatus::CONNECTING;
+        consecutive_failures_ = 0;
 
         // 清空上一路流的缓存帧，避免新 URL 还未出图时客户端读到旧帧
         std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
@@ -775,6 +824,7 @@ void StreamTask::switchDecoder(int decoder_type,
     spdlog::info("StreamTask decoder switch scheduled: {} -> {}, url: {}",
                  decoder_type_, pending_decoder_type_, new_url);
     status_ = StreamStatus::CONNECTING;
+    consecutive_failures_ = 0;
 
     // 清空上一路流的缓存帧，避免新 decoder/URL 还未出图时客户端读到旧帧
     std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
