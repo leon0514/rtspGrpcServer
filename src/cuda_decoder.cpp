@@ -11,82 +11,57 @@ bool CudaDecoder::open(const std::string &url)
     last_url_ = url;      // 保存 URL 供后续重连使用
     frames_to_skip_ = 0; // GPU 解码器需要更多帧来预热和稳定 BGR 转换
 
-    const int MAX_ATTEMPTS = 3;
+    // 每次尝试前先清理资源
+    release();
 
-    for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
+    // 1. 创建解封装器（auto_reboot=false，由上层 StreamTask 统一控制重连）
+    bool low_latency = this->onlyKeyFrames(); // 如果只处理关键帧，可以启用低延迟模式
+    demuxer_ = FFHDDemuxer::create_ffmpeg_demuxer(url, false, this->only_key_frames_);
+    if (!demuxer_)
     {
-        // 每次尝试前先清理资源
-        release();
-
-        // 1. 创建解封装器
-        bool low_latency = this->onlyKeyFrames(); // 如果只处理关键帧，可以启用低延迟模式
-        demuxer_ = FFHDDemuxer::create_ffmpeg_demuxer(url, false, this->only_key_frames_);
-        if (!demuxer_)
-        {
-            std::cerr << "[WARN] Attempt " << attempt << ": Failed to create demuxer for " << url << std::endl;
-            continue;
-        }
-        else
-        {
-            // 2. 创建硬解码器
-            // bUseDeviceFrame = true: 数据保留在 GPU，减少不必要的拷贝
-            // output_bgr = true: 在 GPU 上完成 NV12→BGR 转换
-            decoder_ = FFHDDecoder::create_cuvid_decoder(
-                true, // bUseDeviceFrame = true
-                FFHDDecoder::ffmpeg2NvCodecId(demuxer_->get_video_codec()),
-                low_latency,
-                5,       // max_cache
-                gpu_id_, // gpu_id
-                nullptr,
-                nullptr,
-                true); // output_bgr = true
-
-            if (!decoder_)
-            {
-                spdlog::info("[WARN] Attempt {}: Failed to create decoder for {}", attempt, url);
-                demuxer_.reset(); // 释放 demuxer
-            }
-            else
-            {
-                // 3. 成功创建！推送额外数据并返回
-                uint8_t *extra_data = nullptr;
-                int extra_size = 0;
-                demuxer_->get_extra_data(&extra_data, &extra_size);
-                if (extra_size > 0)
-                {
-                    decoder_->decode(extra_data, extra_size);
-                }
-
-                is_opened_ = true;
-                spdlog::info("[INFO] Successfully opened stream: {}", url);
-                return true;
-            }
-        }
-
-        // 如果未成功，且还没到最后一次尝试，则等待后再试
-        if (attempt < MAX_ATTEMPTS)
-        {
-            spdlog::info("[INFO] Retrying to open stream (attempt {}/{})...", attempt + 1, MAX_ATTEMPTS);
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
+        spdlog::warn("[CudaDecoder] Failed to create demuxer for {}", url);
+        return false;
     }
 
-    spdlog::error("[ERROR] Failed to open stream after {} attempts.", MAX_ATTEMPTS);
-    return false;
+    // 2. 创建硬解码器
+    // bUseDeviceFrame = true: 数据保留在 GPU，减少不必要的拷贝
+    // output_bgr = true: 在 GPU 上完成 NV12→BGR 转换
+    decoder_ = FFHDDecoder::create_cuvid_decoder(
+        true, // bUseDeviceFrame = true
+        FFHDDecoder::ffmpeg2NvCodecId(demuxer_->get_video_codec()),
+        low_latency,
+        5,       // max_cache
+        gpu_id_, // gpu_id
+        nullptr,
+        nullptr,
+        true); // output_bgr = true
+
+    if (!decoder_)
+    {
+        spdlog::warn("[CudaDecoder] Failed to create decoder for {}", url);
+        demuxer_.reset(); // 释放 demuxer
+        return false;
+    }
+
+    // 3. 成功创建！推送额外数据并返回
+    uint8_t *extra_data = nullptr;
+    int extra_size = 0;
+    demuxer_->get_extra_data(&extra_data, &extra_size);
+    if (extra_size > 0)
+    {
+        decoder_->decode(extra_data, extra_size);
+    }
+
+    is_opened_ = true;
+    spdlog::info("[CudaDecoder] Successfully opened stream: {}", url);
+    return true;
 }
 
 bool CudaDecoder::reconnect()
 {
-    spdlog::info("[WARN] Stream disconnected, attempting to reconnect to: {}", last_url_);
-    release();
-    // 简单的重连逻辑：尝试重新 open
-    if (open(last_url_))
-    {
-        spdlog::info("[INFO] Reconnection successful.");
-        return true;
-    }
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-    return false;
+    // 重连策略统一由上层 StreamTask 控制，底层只负责重新 open 一次
+    spdlog::warn("[CudaDecoder] Reconnecting to: {}", last_url_);
+    return open(last_url_);
 }
 
 bool CudaDecoder::isOpened() const
@@ -98,8 +73,8 @@ bool CudaDecoder::grab()
 {
     if (!isOpened())
     {
-        if (!reconnect())
-            return false;
+        spdlog::warn("[CudaDecoder] grab() called but not opened");
+        return false;
     }
 
     // 如果内部还有未取完的帧，不要去拉取新包覆盖！
@@ -116,12 +91,8 @@ bool CudaDecoder::grab()
     {
         if (!demuxer_->demux(&packet_data, &packet_size, &last_pts_, &is_key))
         {
-            // 如果 demux 失败，触发重连逻辑
-            if (reconnect())
-                continue;
-            if (decoded_frames_available_ <= 0)
-                return false;
-            break;
+            // demux 失败直接返回，由上层 StreamTask 统一处理重连
+            return false;
         }
 
         decoded_frames_available_ = decoder_->decode(packet_data, packet_size, last_pts_);

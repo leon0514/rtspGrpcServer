@@ -9,71 +9,45 @@ bool CpuDecoder::open(const std::string &url)
 {
     last_url_ = url;
 
-    const int MAX_ATTEMPTS = 3;
+    // 每次尝试前先彻底清理资源，防止重连时泄漏
+    release();
 
-    for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
+    // 1. 创建解封装器（auto_reboot=false，由上层 StreamTask 统一控制重连）
+    demuxer_ = FFHDDemuxer::create_ffmpeg_demuxer(url, false, this->only_key_frames_);
+    if (!demuxer_)
     {
-        // 🔧 关键修复：每次尝试前先彻底清理资源，防止重连时泄漏
-        release();
-
-        // 1. 创建解封装器
-        demuxer_ = FFHDDemuxer::create_ffmpeg_demuxer(url, true, this->only_key_frames_);
-        if (!demuxer_)
-        {
-            spdlog::warn("[WARN] Attempt {}: Failed to create demuxer for {}", attempt, url);
-        }
-        else
-        {
-            // 获取头部额外数据 (SPS/PPS 等)
-            uint8_t *extra_data = nullptr;
-            int extra_size = 0;
-            demuxer_->get_extra_data(&extra_data, &extra_size);
-
-            // 2. 创建软解码器
-            decoder_ = FFHDDecoder::create_ffmpeg_decoder(
-                static_cast<AVCodecID>(demuxer_->get_video_codec()),
-                extra_data,
-                extra_size);
-
-            if (!decoder_)
-            {
-                spdlog::warn("[WARN] Attempt {}: Failed to create decoder for {}", attempt, url);
-                demuxer_.reset(); // 释放 demuxer
-            }
-            else
-            {
-                is_opened_ = true;
-                spdlog::info("[INFO] Successfully opened stream (CPU): {}", url);
-                return true;
-            }
-        }
-
-        // 如果未成功，且还没到最后一次尝试，则等待后再试
-        if (attempt < MAX_ATTEMPTS)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
+        spdlog::warn("[CpuDecoder] Failed to create demuxer for {}", url);
+        return false;
     }
 
-    spdlog::error("[ERROR] Failed to open CPU stream after {} attempts.", MAX_ATTEMPTS);
-    return false;
+    // 获取头部额外数据 (SPS/PPS 等)
+    uint8_t *extra_data = nullptr;
+    int extra_size = 0;
+    demuxer_->get_extra_data(&extra_data, &extra_size);
+
+    // 2. 创建软解码器
+    decoder_ = FFHDDecoder::create_ffmpeg_decoder(
+        static_cast<AVCodecID>(demuxer_->get_video_codec()),
+        extra_data,
+        extra_size);
+
+    if (!decoder_)
+    {
+        spdlog::warn("[CpuDecoder] Failed to create decoder for {}", url);
+        demuxer_.reset(); // 释放 demuxer
+        return false;
+    }
+
+    is_opened_ = true;
+    spdlog::info("[CpuDecoder] Successfully opened stream: {}", url);
+    return true;
 }
 
 bool CpuDecoder::reconnect()
 {
-    spdlog::warn("[WARN] Stream disconnected, attempting to reconnect to: {}", last_url_);
-    release();
-    // 简单的重连逻辑：尝试重新 open
-    for (int i = 0; i < 3; ++i)
-    {
-        if (open(last_url_))
-        {
-            spdlog::info("[INFO] Reconnection successful (CPU).");
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-    }
-    return false;
+    // 重连策略统一由上层 StreamTask 控制，底层只负责重新 open 一次
+    spdlog::warn("[CpuDecoder] Reconnecting to: {}", last_url_);
+    return open(last_url_);
 }
 
 bool CpuDecoder::isOpened() const
@@ -85,8 +59,8 @@ bool CpuDecoder::grab()
 {
     if (!isOpened())
     {
-        if (!reconnect())
-            return false;
+        spdlog::warn("[CpuDecoder] grab() called but not opened");
+        return false;
     }
 
     uint8_t *packet_data = nullptr;
@@ -105,11 +79,8 @@ bool CpuDecoder::grab()
         // 2. 解码器内没有帧了，去 Demuxer 读新的数据包
         if (!demuxer_->demux(&packet_data, &packet_size, &last_pts_, &is_key))
         {
-            // 如果 demux 失败，触发重连逻辑
-            if (reconnect())
-                continue;
-
-            return false; // 重连失败或流彻底结束
+            // demux 失败直接返回，由上层 StreamTask 统一处理重连
+            return false;
         }
 
         // 3. 将新读取的 Packet 送入解码器
