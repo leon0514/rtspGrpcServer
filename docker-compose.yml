@@ -10,6 +10,9 @@ services:
       # 不开启 ipc: host，改为仅挂载 /dev/shm 目录，
       # 使同一宿主机上的 Python 客户端仍可访问 C++ 端创建的 POSIX 共享内存文件
       - /dev/shm:/dev/shm
+      # 开发/调试：直接挂载本地编译好的二进制和入口脚本，避免每次修改都重建镜像
+      - ./build/rtsp_server:/app/rtsp_server
+      - ./entrypoint.sh:/app/entrypoint.sh
     deploy:
       resources:
         reservations:

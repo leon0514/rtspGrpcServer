@@ -127,11 +127,25 @@ StreamTask::~StreamTask()
     }
     if (io_thread_.joinable()) 
     {
-        // 如果当前线程就是 io_thread_ 自己，这里会死锁，所以要判断
-        if (std::this_thread::get_id() != io_thread_.get_id()) 
+        try
         {
-            io_thread_.join();
-        } 
+            // 如果当前线程就是 io_thread_ 自己，这里会死锁，所以要判断
+            if (std::this_thread::get_id() != io_thread_.get_id()) 
+            {
+                io_thread_.join();
+            }
+            else
+            {
+                // 防止在 io_thread_ 自身中析构 StreamTask 时，joinable 的 std::thread
+                // 被成员析构函数销毁而触发 std::terminate。
+                // detach 后该线程会立即结束（ioLoop 已因 running_=false 退出）。
+                io_thread_.detach();
+            }
+        }
+        catch (const std::system_error &e)
+        {
+            spdlog::error("[StreamTask] io_thread join/detach failed in destructor: {}", e.what());
+        }
     }
     
     // 2. 析构时必须显式清理 SHM（即使 stop() 已经被调用过，cleanup() 是幂等的）
@@ -189,7 +203,19 @@ void StreamTask::ioLoop()
 {
     while (running_)
     {
-        stepIO();
+        try
+        {
+            stepIO();
+        }
+        catch (const std::exception &e)
+        {
+            spdlog::error("[ioLoop] Exception in stepIO for {}: {}", url_, e.what());
+        }
+        catch (...)
+        {
+            spdlog::error("[ioLoop] Unknown exception in stepIO for {}", url_);
+        }
+
         if (!running_)
             break;
 
@@ -239,10 +265,24 @@ void StreamTask::stop()
     
     if (io_thread_.joinable()) 
     {
-        if (std::this_thread::get_id() != io_thread_.get_id()) 
+        try
         {
-            sleep_cv_.notify_all();
-            io_thread_.join();
+            if (std::this_thread::get_id() != io_thread_.get_id()) 
+            {
+                sleep_cv_.notify_all();
+                io_thread_.join();
+            }
+            else
+            {
+                // 在 IO 线程内部调用 stop() 时无法 join 自己；如果此时 self 是最后一个
+                // shared_ptr，StreamTask 会在 io_thread_ 中析构，导致 joinable 的
+                // std::thread 被销毁而触发 std::terminate。detach 可避免该问题。
+                io_thread_.detach();
+            }
+        }
+        catch (const std::system_error &e)
+        {
+            spdlog::error("[StreamTask] io_thread join/detach failed in stop: {}", e.what());
         }
     }
 
@@ -462,26 +502,36 @@ void StreamTask::stepIO()
         // 需要解码：释放锁，将任务派发给计算线程池
         lock.unlock();
         spdlog::debug("[stepIO] Enqueueing stepCompute to pool gpu_id={}", gpu_id_);
-        compute_in_flight_++;
         std::weak_ptr<StreamTask> weak_self = shared_from_this();
         TaskScheduler::instance().getComputePool(gpu_id_).enqueue(
             [weak_self]()
             {
-                if (auto self = weak_self.lock())
+                auto self = weak_self.lock();
+                if (!self)
+                {
+                    spdlog::warn("[stepCompute] weak_ptr expired, task destroyed before compute");
+                    return;
+                }
+
+                // 任务真正开始执行时才增加计数，确保 stop()/析构只等待实际在运行的计算任务
+                self->compute_in_flight_++;
+                try
                 {
                     spdlog::debug("[stepCompute] Executing for {}", self->url_);
                     self->stepCompute();
                 }
-                else
+                catch (const std::exception &e)
                 {
-                    spdlog::warn("[stepCompute] weak_ptr expired, task destroyed before compute");
+                    spdlog::error("[stepCompute] Exception for {}: {}", self->url_, e.what());
                 }
-                // 计数器在 lambda 结束时递减，确保 stop() 能等待所有计算任务完成
-                if (auto self = weak_self.lock())
+                catch (...)
                 {
-                    self->compute_in_flight_--;
-                    self->compute_done_cv_.notify_all();
+                    spdlog::error("[stepCompute] Unknown exception for {}", self->url_);
                 }
+
+                // 计数器递减，确保 stop()/析构不会无限等待
+                self->compute_in_flight_--;
+                self->compute_done_cv_.notify_all();
             });
     }
     else

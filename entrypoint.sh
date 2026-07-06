@@ -15,5 +15,9 @@ if [ -f /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 ]; then
 fi
 
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
-# 2. 启动你的服务
+
+# 2. 确保挂载进来的二进制有执行权限（docker-compose 挂载时可能丢失 x 位）
+chmod +x /app/rtsp_server
+
+# 3. 启动你的服务
 exec ./rtsp_server
