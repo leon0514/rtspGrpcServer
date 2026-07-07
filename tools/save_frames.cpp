@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <atomic>
+#include <thread>
 
 #include <grpcpp/grpcpp.h>
 #include "stream_service.grpc.pb.h"
