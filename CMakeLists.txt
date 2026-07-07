@@ -212,6 +212,23 @@ target_link_libraries(stream_info
 )
 
 # ==========================================
+# 9. 小工具：save_frames
+# ==========================================
+add_executable(save_frames
+    tools/save_frames.cpp
+    "${PROTO_GEN_DIR}/stream_service.pb.cc"
+    "${PROTO_GEN_DIR}/stream_service.grpc.pb.cc"
+)
+target_include_directories(save_frames PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+target_link_libraries(save_frames
+    PRIVATE
+    ${OpenCV_LIBS}
+    ${GRPC_LIBRARIES}
+    protobuf::libprotobuf
+    grpc++_reflection
+)
+
+# ==========================================
 # 7. 链接库 (修复了 CUDA 目标的命名)
 # ==========================================
 target_link_libraries(rtsp_server 
