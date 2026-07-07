@@ -12,13 +12,14 @@
 #include <unistd.h>
 #include <atomic>
 #include <thread>
+#include <chrono>
 
 #include <grpcpp/grpcpp.h>
 #include "stream_service.grpc.pb.h"
 #include <opencv2/opencv.hpp>
 
 // 与 zero_copy_channel.hpp 中 ShmMeta 完全一致
-struct ShmMeta
+struct alignas(64) ShmMeta
 {
     uint64_t actual_size;
     uint64_t width;
@@ -80,7 +81,7 @@ static bool parseArgs(int argc, char **argv,
             if (i + 1 >= argc) return false;
             server = argv[++i];
         }
-        else if (arg == "-o" || arg == "output-dir")
+        else if (arg == "-o" || arg == "--output-dir")
         {
             if (i + 1 >= argc) return false;
             output_dir = argv[++i];
@@ -239,50 +240,111 @@ public:
 
     bool isValid() const { return base_ != nullptr; }
 
-    bool read(cv::Mat &frame, uint64_t &timestamp, int timeout_ms)
+    bool read(cv::Mat &frame, uint64_t &timestamp, int timeout_ms, std::string &reason)
     {
-        if (!base_) return false;
+        reason.clear();
+        if (!base_)
+        {
+            reason = "SHM not mapped";
+            return false;
+        }
 
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (std::chrono::steady_clock::now() < deadline)
         {
-            if (tryRead(frame, timestamp))
+            if (tryRead(frame, timestamp, reason))
             {
                 return true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        if (reason.empty()) reason = "timeout";
         return false;
     }
 
 private:
-    bool tryRead(cv::Mat &frame, uint64_t &timestamp)
+    bool tryRead(cv::Mat &frame, uint64_t &timestamp, std::string &reason)
     {
-        // 必须用 std::atomic 的 load 才能保证与服务端 store(release) 正确同步
-        auto *head_atomic = reinterpret_cast<std::atomic<uint64_t> *>(base_ + layout_.head_idx_offset);
-        uint64_t head = head_atomic->load(std::memory_order_acquire);
-        if (head == last_idx_) return false;
+        reason.clear();
+
+        // 使用编译器内置原子操作，避免 std::atomic reinterpret_cast 的 UB 和 segfault
+        uint64_t head = __atomic_load_n(
+            reinterpret_cast<uint64_t *>(base_ + layout_.head_idx_offset),
+            __ATOMIC_ACQUIRE);
+        if (head == last_idx_)
+        {
+            reason = "no new frame (head=" + std::to_string(head) + ")";
+            return false;
+        }
 
         size_t idx = head % layout_.slot_count;
         uint8_t *slot = base_ + idx * layout_.slot_size;
 
-        auto *seq_atomic = reinterpret_cast<std::atomic<uint64_t> *>(slot + layout_.seq_offset);
-        uint64_t seq1 = seq_atomic->load(std::memory_order_acquire);
-        if (seq1 & 1) return false;
+        uint64_t seq1 = __atomic_load_n(
+            reinterpret_cast<uint64_t *>(slot + layout_.seq_offset),
+            __ATOMIC_ACQUIRE);
+        if (seq1 & 1)
+        {
+            reason = "slot writing (seq=" + std::to_string(seq1) + ")";
+            return false;
+        }
 
         ShmMeta meta;
         std::memcpy(&meta, slot + layout_.meta_offset, sizeof(ShmMeta));
 
-        uint64_t seq2 = seq_atomic->load(std::memory_order_acquire);
-        if (seq1 != seq2) return false;
+        uint64_t seq2 = __atomic_load_n(
+            reinterpret_cast<uint64_t *>(slot + layout_.seq_offset),
+            __ATOMIC_ACQUIRE);
+        if (seq1 != seq2)
+        {
+            reason = "sequence changed during read";
+            return false;
+        }
 
-        if (meta.actual_size == 0 || meta.actual_size > layout_.max_frame_bytes) return false;
+        if (meta.actual_size == 0 || meta.actual_size > layout_.max_frame_bytes)
+        {
+            reason = "invalid actual_size=" + std::to_string(meta.actual_size)
+                     + " max=" + std::to_string(layout_.max_frame_bytes);
+            return false;
+        }
+
+        if (meta.width == 0 || meta.height == 0 || meta.channels == 0)
+        {
+            reason = "invalid meta: w=" + std::to_string(meta.width)
+                     + " h=" + std::to_string(meta.height)
+                     + " c=" + std::to_string(meta.channels);
+            return false;
+        }
+
+        if (meta.channels != 1 && meta.channels != 3 && meta.channels != 4)
+        {
+            reason = "invalid channels=" + std::to_string(meta.channels);
+            return false;
+        }
+
+        if (meta.depth > CV_64F)
+        {
+            reason = "invalid depth=" + std::to_string(meta.depth);
+            return false;
+        }
 
         int cv_type = CV_MAKETYPE(meta.depth, meta.channels);
         cv::Mat img(static_cast<int>(meta.height), static_cast<int>(meta.width), cv_type);
-        if (img.empty()) return false;
+        if (img.empty())
+        {
+            reason = "cv::Mat create failed";
+            return false;
+        }
 
-        size_t elem_size = img.elemSize();
+        size_t img_bytes = img.total() * img.elemSize();
+        if (meta.actual_size > img_bytes)
+        {
+            reason = "actual_size > img_bytes: " + std::to_string(meta.actual_size)
+                     + " > " + std::to_string(img_bytes);
+            return false;
+        }
+
+        size_t elem_size = img.elemSize1();                    // 单个通道字节数（与 Python 端 itemsize 对应）
         size_t expected_step = meta.width * meta.channels * elem_size;
         uint8_t *payload = slot + layout_.payload_offset;
 
@@ -411,21 +473,24 @@ int main(int argc, char **argv)
             cv::Mat frame;
             int64_t timestamp = 0;
             bool ok = false;
+            std::string reason;
 
             if (info.use_shared_mem)
             {
                 uint64_t ts = 0;
-                ok = shm_reader->read(frame, ts, timeout_ms);
+                ok = shm_reader->read(frame, ts, timeout_ms, reason);
                 timestamp = static_cast<int64_t>(ts);
             }
             else
             {
                 ok = fetchJpegFrame(*stub, info.stream_id, frame, timestamp);
+                if (!ok) reason = "gRPC GetLatestFrame failed";
             }
 
             if (!ok || frame.empty())
             {
-                std::cout << "  -> frame " << (idx + 1) << "/" << count << " read failed\n";
+                std::cout << "  -> frame " << (idx + 1) << "/" << count
+                          << " read failed: " << reason << "\n";
                 failed++;
                 continue;
             }
@@ -449,7 +514,7 @@ int main(int argc, char **argv)
 
             if (idx < count - 1 && interval_ms > 0)
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(interval_ms)));
+                std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(interval_ms));
             }
         }
         std::cout << "\n";

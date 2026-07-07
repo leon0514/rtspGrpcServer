@@ -14,7 +14,7 @@
 #include <spdlog/spdlog.h>
 #include <opencv2/opencv.hpp>
 
-// 6 * 2560 * 1440 ≈ 21 MB，足以容纳一帧较大尺寸的 BGR 图像
+// 3 * 2560 * 1440 ≈ 10 MB，足以容纳一帧较大尺寸的 BGR 图像
 constexpr size_t MAX_SHM_FRAME_SIZE = 3 * 2560 * 1440;
 constexpr int SHM_SLOT_COUNT = 3;
 
@@ -39,7 +39,7 @@ struct alignas(64) ShmFrameSlot
     uint8_t payload[MAX_SHM_FRAME_SIZE]; // 变长数据存放区
 };
 
-// 8 + 32 + 6 * 2560 * 1440 ≈ 21 MB per slot
+// 8 + 32 + 3 * 2560 * 1440 ≈ 10 MB per slot
 
 struct ShmLayout
 {
