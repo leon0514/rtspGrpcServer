@@ -145,17 +145,20 @@ cmake .. && make -j
 ### Docker 启动（GPU）
 
 ```bash
+# 如需项目级 SHM 隔离，先创建命名空间目录（默认 grpc_rtsp）
+mkdir -p /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}
+
 docker run -itd \
   --gpus '"device=1"' \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+  -e SHM_NAMESPACE=${SHM_NAMESPACE:-grpc_rtsp} \
   --name grpc_rtsp_server \
   -p 50051:50051 \
-  -v /dev/shm:/dev/shm \
-  --shm-size=2g \
+  -v /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}:/dev/shm \
   grpc_rtsp_server
 ```
 
-> **关键参数**：挂载 `-v /dev/shm:/dev/shm` 必须开启，否则 Python 客户端无法访问 C++ 端创建的 POSIX 共享内存（`/dev/shm/rtsp_grpc_<16位十六进制>`）。`--shm-size` 根据摄像头数量调整。
+> **关键参数**：挂载 `/dev/shm/<SHM_NAMESPACE>:/dev/shm` 必须开启，否则 Python 客户端无法访问 C++ 端创建的 POSIX 共享内存（`/dev/shm/rtsp_grpc_<16位十六进制>`）。由于使用 bind mount，容器内 `/dev/shm` 实际容量由宿主机 `/dev/shm` 决定；如需调整请在宿主机执行 `mount -o remount,size=32G /dev/shm`。
 
 ### Python Proto 生成
 
@@ -260,8 +263,9 @@ python example.py [编号]      # 编号 1-10，或 all 顺序运行全部
 ### 共享内存清理与命名
 
 - **命名前缀**：为便于识别和清理，所有共享内存对象（及通知信号量）名称统一带 `rtsp_grpc_` 前缀，例如 `/dev/shm/rtsp_grpc_a1b2c3d4...`、`/dev/shm/sem.rtsp_grpc_a1b2c3d4..._notify`。
+- **项目级 SHM 隔离**：`docker-compose.yml` 支持通过环境变量 `SHM_NAMESPACE` 将容器内 `/dev/shm` 映射到宿主机的 `/dev/shm/<SHM_NAMESPACE>/`，避免同一宿主机多个项目之间的 `stream_id` 冲突。容器内代码仍通过 `/dev/shm/rtsp_grpc_*` 创建/访问共享内存文件，因此清理逻辑无需修改。
 - **启动兜底清理**：
-  - `entrypoint.sh` 在启动服务前会执行 `rm -f /dev/shm/rtsp_grpc_* /dev/shm/sem.rtsp_grpc_*_notify`，清理上一次运行遗留的对象。
+  - `entrypoint.sh` 在启动服务前会执行 `rm -f /dev/shm/rtsp_grpc_* /dev/shm/sem.rtsp_grpc_*_notify`，清理上一次运行遗留的对象（当启用 `SHM_NAMESPACE` 时，容器内 `/dev/shm` 已对应宿主机子目录，因此只会清理该命名空间下的对象）。
   - `RTSPServiceImpl` 构造函数也会扫描 `/dev/shm` 并 `shm_unlink` 匹配的孤儿对象，作为非 Docker / 直接启动时的兜底。
 - **运行时清理**：流正常停止、心跳超时、`SIGINT/SIGTERM` 退出时都会调用 `ZeroCopyChannel::cleanup()` 进行 `shm_unlink` / `sem_unlink`。
 - **竞态保护**：`StreamTask::stop()` 会等待所有已投递的 `stepCompute` 任务完成后再清理 SHM；`ZeroCopyChannel` 内部通过互斥锁和 `cleaned_` 标志避免 `write_frame` 与 `cleanup` 并发。
@@ -286,7 +290,7 @@ python example.py [编号]      # 编号 1-10，或 all 顺序运行全部
 
 1. **gRPC 传输未加密**：当前使用 `grpc::InsecureServerCredentials()`，没有 TLS。如需公网暴露，必须增加 TLS 或 mTLS 配置。
 2. **共享内存权限**：`ZeroCopyChannel` 创建 SHM 时使用 `0666` 权限（`shm_open(..., O_CREAT | O_RDWR, 0666)`），任何有 `/dev/shm` 访问权限的进程都可读写。
-3. **Docker `/dev/shm` 挂载**：使用 `-v /dev/shm:/dev/shm` 替代 `--ipc=host`，只共享 POSIX 共享内存文件目录，不暴露完整的 IPC 命名空间，兼顾功能与隔离性。
+3. **Docker `/dev/shm` 挂载**：使用 `-v /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}:/dev/shm` 替代 `--ipc=host`，只共享 POSIX 共享内存文件目录，不暴露完整的 IPC 命名空间。通过 `SHM_NAMESPACE` 可进一步实现项目级隔离，避免多项目部署时的 `stream_id` 冲突。
 4. **RTSP URL 中的凭据**：`StartRequest` 和 `StreamInfo` 中包含明文 RTSP 账号密码，日志和 gRPC 消息中均为明文传输。
 5. **nvcuvid 运行时链接**：`libnvcuvid.so` 在构建时可能找不到（CMake 仅警告），但在运行时必须存在，否则 GPU 解码会失败。
 6. **jemalloc 预加载**：`entrypoint.sh` 通过 `LD_PRELOAD` 强制加载 jemalloc，可能与某些调试工具不兼容。

@@ -42,23 +42,25 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. stream_servic
 ```
 docker 启动
 ```bash
+# 如需项目级 SHM 隔离，先创建命名空间目录（默认 grpc_rtsp）
+mkdir -p /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}
+
 docker run -itd \
   --gpus '"device=1"' \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+  -e SHM_NAMESPACE=${SHM_NAMESPACE:-grpc_rtsp} \
   --name grpc_rtsp_server \
   -p 50051:50051 \
-  --ipc=host \
-  --shm-size=2g \
+  -v /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}:/dev/shm \
   grpc_rtsp_server
 ```
 
 #### 核心参数原理解析：
-    --ipc=host （关键）
-    作用：开启容器与宿主机的 IPC 共享命名空间，使 POSIX 共享内存文件对宿主机可见。
-    效果：C++ 在容器内调用 shm_open("/1732b0a8", ...)，宿主机的 /dev/shm/1732b0a8 会立刻出现这个文件。你的 Python 脚本（如果在宿主机运行）就能顺利 mmap 到它。
-    --shm-size=2g
-    作用：将容器内 /dev/shm 的上限从默认 64MB 提高到 2GB（你可以根据摄像头数量自行调整，如 1g, 4g 等）。
-    效果：防止 C++ 服务端在多路并发解码时，调用 ftruncate 申请物理内存空间失败导致程序闪退。
+    -v /dev/shm/<SHM_NAMESPACE>:/dev/shm （关键）
+    作用：将宿主机的 POSIX 共享内存目录（或项目级子目录）挂载到容器内，使 C++ 端创建的 SHM 文件对宿主机及其他容器可见。
+    效果：C++ 在容器内调用 shm_open("/rtsp_grpc_1732b0a8", ...)，宿主机的 /dev/shm/<SHM_NAMESPACE>/rtsp_grpc_1732b0a8 会立刻出现这个文件。你的 Python 脚本（如果在宿主机运行）就能顺利 mmap 到它。
+    隔离：通过 SHM_NAMESPACE 环境变量（默认 grpc_rtsp）可将 SHM 文件隔离到 /dev/shm/<SHM_NAMESPACE>/，避免同一宿主机多个项目冲突。
+    容量：由于使用 bind mount，容器内 /dev/shm 的实际容量由宿主机 /dev/shm 决定；如需调整请在宿主机执行 `mount -o remount,size=32G /dev/shm`。
 
 #### Docker 镜像构建注意事项
 修改 C++ 服务端代码后，必须使用 `--no-cache` 重新构建镜像，否则 Dockerfile 可能复用旧的 `build/rtsp_server` 缓存层：
