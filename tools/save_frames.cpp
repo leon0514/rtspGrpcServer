@@ -258,25 +258,22 @@ public:
 private:
     bool tryRead(cv::Mat &frame, uint64_t &timestamp)
     {
-        uint64_t *head_ptr = reinterpret_cast<uint64_t *>(base_ + layout_.head_idx_offset);
-        uint64_t head = *head_ptr;
-        std::atomic_thread_fence(std::memory_order_acquire);
-
+        // 必须用 std::atomic 的 load 才能保证与服务端 store(release) 正确同步
+        auto *head_atomic = reinterpret_cast<std::atomic<uint64_t> *>(base_ + layout_.head_idx_offset);
+        uint64_t head = head_atomic->load(std::memory_order_acquire);
         if (head == last_idx_) return false;
 
         size_t idx = head % layout_.slot_count;
         uint8_t *slot = base_ + idx * layout_.slot_size;
 
-        uint64_t *seq_ptr = reinterpret_cast<uint64_t *>(slot + layout_.seq_offset);
-        uint64_t seq1 = *seq_ptr;
-        std::atomic_thread_fence(std::memory_order_acquire);
+        auto *seq_atomic = reinterpret_cast<std::atomic<uint64_t> *>(slot + layout_.seq_offset);
+        uint64_t seq1 = seq_atomic->load(std::memory_order_acquire);
         if (seq1 & 1) return false;
 
         ShmMeta meta;
         std::memcpy(&meta, slot + layout_.meta_offset, sizeof(ShmMeta));
 
-        uint64_t seq2 = *seq_ptr;
-        std::atomic_thread_fence(std::memory_order_acquire);
+        uint64_t seq2 = seq_atomic->load(std::memory_order_acquire);
         if (seq1 != seq2) return false;
 
         if (meta.actual_size == 0 || meta.actual_size > layout_.max_frame_bytes) return false;
