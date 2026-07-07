@@ -18,6 +18,8 @@ export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
 
 # 2. 确保挂载进来的二进制有执行权限（docker-compose 挂载时可能丢失 x 位）
 chmod +x /app/rtsp_server
+chmod +x /app/save_frames
+chmod +x /app/stream_info
 
 # 3. 启动你的服务
 exec ./rtsp_server

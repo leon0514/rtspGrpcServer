@@ -5,3 +5,7 @@ build/
 *.tar
 *.tar.gz
 protoc-gen-openapiv2
+workspace/rtsp_server
+workspace/save_frames
+workspace/stream_info
+workspace/logs
