@@ -47,6 +47,38 @@ struct ShmLayout
     alignas(64) std::atomic<uint64_t> head_idx{0};
 };
 
+// C++ 端共享内存布局描述（用于填充 protobuf 返回给 Python 客户端）
+struct ShmLayoutInfo
+{
+    uint64_t slot_count = 0;
+    uint64_t max_frame_bytes = 0;
+    uint64_t alignment = 0;
+    uint64_t slot_size = 0;
+    uint64_t seq_offset = 0;
+    uint64_t meta_offset = 0;
+    uint64_t payload_offset = 0;
+    uint64_t meta_data_size = 0;
+    uint64_t head_idx_offset = 0;
+    uint64_t total_size = 0;
+};
+
+// 由 C++ 编译器自动计算实际偏移/大小，避免 Python 端硬编码出错
+static inline ShmLayoutInfo getShmLayoutInfo()
+{
+    ShmLayoutInfo info;
+    info.slot_count = SHM_SLOT_COUNT;
+    info.max_frame_bytes = MAX_SHM_FRAME_SIZE;
+    info.alignment = alignof(ShmFrameSlot);
+    info.slot_size = sizeof(ShmFrameSlot);
+    info.seq_offset = offsetof(ShmFrameSlot, sequence);
+    info.meta_offset = offsetof(ShmFrameSlot, meta);
+    info.payload_offset = offsetof(ShmFrameSlot, payload);
+    info.meta_data_size = sizeof(ShmMeta);
+    info.head_idx_offset = offsetof(ShmLayout, head_idx);
+    info.total_size = sizeof(ShmLayout);
+    return info;
+}
+
 class ZeroCopyChannel
 {
 public:

@@ -196,6 +196,22 @@ if(HIKVISION_LIBRARIES)
 endif()
 
 # ==========================================
+# 8. 小工具：stream_info
+# ==========================================
+add_executable(stream_info
+    tools/stream_info.cpp
+    "${PROTO_GEN_DIR}/stream_service.pb.cc"
+    "${PROTO_GEN_DIR}/stream_service.grpc.pb.cc"
+)
+target_include_directories(stream_info PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+target_link_libraries(stream_info
+    PRIVATE
+    ${GRPC_LIBRARIES}
+    protobuf::libprotobuf
+    grpc++_reflection
+)
+
+# ==========================================
 # 7. 链接库 (修复了 CUDA 目标的命名)
 # ==========================================
 target_link_libraries(rtsp_server 

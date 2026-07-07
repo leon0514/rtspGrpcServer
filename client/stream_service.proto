@@ -25,6 +25,7 @@ service RTSPStreamService {
     rpc CheckStream (CheckRequest) returns (CheckResponse);
     rpc ListStreams (ListStreamsRequest) returns (ListStreamsResponse);  // 查询所有流
     rpc UpdateStream (UpdateStreamRequest) returns (UpdateStreamResponse);  // 更新流信息
+    rpc GetShmLayout (ShmLayoutRequest) returns (ShmLayoutResponse);  // 获取共享内存布局信息
 }
 
 message StartRequest {
@@ -112,4 +113,27 @@ message UpdateStreamRequest {
 message UpdateStreamResponse {
   bool success = 1;
   string message = 2;
+}
+
+message ShmLayoutInfo {
+    uint64 slot_count = 1;        // 每路流槽位数
+    uint64 max_frame_bytes = 2;   // 单帧最大字节数
+    uint64 alignment = 3;         // 内存对齐字节数
+    uint64 slot_size = 4;         // 单个槽位总字节数（含对齐填充）
+    uint64 seq_offset = 5;        // sequence 在槽位内的偏移
+    uint64 meta_offset = 6;       // ShmMeta 在槽位内的偏移
+    uint64 payload_offset = 7;    // payload 在槽位内的偏移
+    uint64 meta_data_size = 8;    // ShmMeta 实际数据大小（非对齐后）
+    uint64 head_idx_offset = 9;   // head_idx 在整段 SHM 中的偏移
+    uint64 total_size = 10;       // 整段 SHM 总字节数
+}
+
+message ShmLayoutRequest {
+    // 空请求，布局信息与具体流无关
+}
+
+message ShmLayoutResponse {
+    bool success = 1;
+    string message = 2;
+    ShmLayoutInfo layout = 3;
 }

@@ -27,6 +27,7 @@ public:
     grpc::Status CheckStream(grpc::ServerContext *context, const streamingservice::CheckRequest *request, streamingservice::CheckResponse *response) override;
     grpc::Status ListStreams(grpc::ServerContext *context, const streamingservice::ListStreamsRequest *request, streamingservice::ListStreamsResponse *response) override;
     grpc::Status UpdateStream(grpc::ServerContext *context, const streamingservice::UpdateStreamRequest *request, streamingservice::UpdateStreamResponse *response) override;
+    grpc::Status GetShmLayout(grpc::ServerContext *context, const streamingservice::ShmLayoutRequest *request, streamingservice::ShmLayoutResponse *response) override;
 
 private:
     void cleanupLoop();

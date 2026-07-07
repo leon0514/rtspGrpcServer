@@ -648,3 +648,25 @@ grpc::Status RTSPServiceImpl::UpdateStream(grpc::ServerContext *context,
     response->set_message("URL updated in management map, task will reconnect.");
     return grpc::Status::OK;
 }
+
+grpc::Status RTSPServiceImpl::GetShmLayout(grpc::ServerContext *context,
+                                           const streamingservice::ShmLayoutRequest *request,
+                                           streamingservice::ShmLayoutResponse *response)
+{
+    auto info = getShmLayoutInfo();
+    auto *layout = response->mutable_layout();
+    layout->set_slot_count(info.slot_count);
+    layout->set_max_frame_bytes(info.max_frame_bytes);
+    layout->set_alignment(info.alignment);
+    layout->set_slot_size(info.slot_size);
+    layout->set_seq_offset(info.seq_offset);
+    layout->set_meta_offset(info.meta_offset);
+    layout->set_payload_offset(info.payload_offset);
+    layout->set_meta_data_size(info.meta_data_size);
+    layout->set_head_idx_offset(info.head_idx_offset);
+    layout->set_total_size(info.total_size);
+
+    response->set_success(true);
+    response->set_message("OK");
+    return grpc::Status::OK;
+}

@@ -171,25 +171,40 @@ class _NotifySemaphore:
 class _ShmReader:
     """共享内存帧读取器（内部使用）"""
 
-    def __init__(self, stream_id: str):
+    def __init__(self, stream_id: str, layout_info: Optional[dict] = None):
         self.stream_id = stream_id
         self.shm_paths = [f"/dev/shm/{stream_id}", f"/{stream_id.lstrip('/')}"]
 
-        self.ALIGNMENT = 64
         self.UINT64_SIZE = 8
         self.UINT32_SIZE = 4
-        self.MAX_FRAME_BYTES = 3 * 2560 * 1440
-        self.SLOT_COUNT = 3
 
-        self.META_DATA_SIZE = 4 * self.UINT64_SIZE + 4 * self.UINT32_SIZE
-        self.META_STRUCT_SIZE = align_up(self.META_DATA_SIZE, self.ALIGNMENT)
+        if layout_info:
+            # 使用服务端 GetShmLayout 返回的实际布局，避免硬编码出错
+            self.ALIGNMENT = layout_info["alignment"]
+            self.MAX_FRAME_BYTES = layout_info["max_frame_bytes"]
+            self.SLOT_COUNT = layout_info["slot_count"]
+            self.META_DATA_SIZE = layout_info["meta_data_size"]
+            self.SEQ_OFFSET = layout_info["seq_offset"]
+            self.META_OFFSET = layout_info["meta_offset"]
+            self.PAYLOAD_OFFSET = layout_info["payload_offset"]
+            self.SLOT_SIZE = layout_info["slot_size"]
+            # meta 在内存中实际占用的对齐后大小
+            self.META_STRUCT_SIZE = self.PAYLOAD_OFFSET - self.META_OFFSET
+        else:
+            # 旧版服务端未实现 GetShmLayout 时的 fallback 硬编码
+            self.ALIGNMENT = 64
+            self.MAX_FRAME_BYTES = 3 * 2560 * 1440
+            self.SLOT_COUNT = 3
 
-        self.SEQ_OFFSET = 0
-        self.META_OFFSET = align_up(self.SEQ_OFFSET + self.UINT64_SIZE, self.ALIGNMENT)
-        self.PAYLOAD_OFFSET = self.META_OFFSET + self.META_STRUCT_SIZE
+            self.META_DATA_SIZE = 4 * self.UINT64_SIZE + 4 * self.UINT32_SIZE
+            self.META_STRUCT_SIZE = align_up(self.META_DATA_SIZE, self.ALIGNMENT)
 
-        slot_raw_size = self.PAYLOAD_OFFSET + self.MAX_FRAME_BYTES
-        self.SLOT_SIZE = align_up(slot_raw_size, self.ALIGNMENT)
+            self.SEQ_OFFSET = 0
+            self.META_OFFSET = align_up(self.SEQ_OFFSET + self.UINT64_SIZE, self.ALIGNMENT)
+            self.PAYLOAD_OFFSET = self.META_OFFSET + self.META_STRUCT_SIZE
+
+            slot_raw_size = self.PAYLOAD_OFFSET + self.MAX_FRAME_BYTES
+            self.SLOT_SIZE = align_up(slot_raw_size, self.ALIGNMENT)
 
         self._mmap_obj: Optional[mmap.mmap] = None
         self._shm_view: Optional[memoryview] = None
@@ -526,6 +541,38 @@ class _BaseRTSPClient:
             return True
         return self.connect()
 
+    @_grpc_retry(default_return=None)
+    def get_shm_layout(self) -> Optional[dict]:
+        """从服务端获取共享内存布局信息；旧版服务端未实现则返回 None"""
+        if not self._ensure_stub():
+            return None
+        req = stream_service_pb2.ShmLayoutRequest()
+        try:
+            resp = self._stub.GetShmLayout(req, timeout=5)
+            if resp.success:
+                layout = resp.layout
+                return {
+                    "slot_count": layout.slot_count,
+                    "max_frame_bytes": layout.max_frame_bytes,
+                    "alignment": layout.alignment,
+                    "slot_size": layout.slot_size,
+                    "seq_offset": layout.seq_offset,
+                    "meta_offset": layout.meta_offset,
+                    "payload_offset": layout.payload_offset,
+                    "meta_data_size": layout.meta_data_size,
+                    "head_idx_offset": layout.head_idx_offset,
+                    "total_size": layout.total_size,
+                }
+            logger.warning(f"服务端返回 GetShmLayout 失败: {resp.message}")
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                logger.debug("服务端未实现 GetShmLayout，SHM 使用本地硬编码布局")
+            else:
+                logger.error(f"获取 SHM 布局失败: {e.details()}")
+        except Exception as e:
+            logger.error(f"获取 SHM 布局失败: {e}")
+        return None
+
     def start_stream(self,
                      rtsp_url: str,
                      heartbeat_timeout_ms: int = 100000,
@@ -737,9 +784,10 @@ class RTSPClient(_BaseRTSPClient):
     def __init__(self, server_address: str = '127.0.0.1:50051'):
         super().__init__(server_address)
         self._shm_readers: Dict[str, _ShmReader] = {}
-        self._stream_modes: Dict[str, bool] = {}     # stream_id -> use_shared_mem 缓存
-        self._stream_params: Dict[str, dict] = {}     # original_stream_id -> 启动参数
-        self._stream_id_map: Dict[str, str] = {}      # original_stream_id -> current_stream_id
+        self._stream_modes: Dict[str, bool] = {}      # stream_id -> use_shared_mem 缓存
+        self._stream_params: Dict[str, dict] = {}      # original_stream_id -> 启动参数
+        self._stream_id_map: Dict[str, str] = {}       # original_stream_id -> current_stream_id
+        self._shm_layout: Optional[dict] = None        # 服务端 SHM 布局缓存
         # 注册进程退出兜底清理：避免客户端异常退出后 mmap 长期占用 tmpfs 空间
         atexit.register(_cleanup_client_on_exit, weakref.ref(self))
 
@@ -962,7 +1010,10 @@ class RTSPClient(_BaseRTSPClient):
                 return None
             return reader
 
-        reader = _ShmReader(stream_id)
+        if self._shm_layout is None:
+            self._shm_layout = self.get_shm_layout()
+
+        reader = _ShmReader(stream_id, layout_info=self._shm_layout)
         if not reader.exists():
             logger.error(
                 f"[RTSPClient] 未找到共享内存: /dev/shm/{stream_id}。"
