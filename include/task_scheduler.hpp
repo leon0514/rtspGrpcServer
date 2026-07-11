@@ -3,8 +3,11 @@
 #include <memory>
 #include <vector>
 #include <mutex>
-#include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
+
+#ifdef RTSP_ENABLE_CUDA
+#include <cuda_runtime.h>
+#endif
 
 class TaskScheduler
 {
@@ -57,7 +60,9 @@ public:
         cpu_compute_pool_ = std::make_unique<ThreadPool>(cpu_compute_threads);
 
         int gpu_count = 0;
+#ifdef RTSP_ENABLE_CUDA
         cudaGetDeviceCount(&gpu_count);
+#endif
         if (gpu_count > 0)
         {
             gpu_compute_pools_.reserve(gpu_count);

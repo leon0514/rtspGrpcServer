@@ -106,8 +106,9 @@ rtspGrpcServer/
 │   └── timer_scheduler.cpp    # TimerScheduler 实现
 ├── CMakeLists.txt         # CMake 构建配置
 ├── Dockerfile             # GPU 运行时镜像
-├── Dockerfile.cpu         # CPU-only 多阶段构建镜像
+├── Dockerfile.cpu         # CPU-only 单阶段运行镜像（拷贝预编译二进制）
 ├── docker-compose.yml     # GPU 部署编排
+├── docker-compose.cpu.yml # CPU-only 部署编排
 ├── entrypoint.sh          # 容器入口（nvcuvid 软链接、jemalloc 预加载）
 ├── stream_service.proto   # 主 gRPC/Protobuf 服务定义
 ├── README.md              # 详细中文文档（含 API、示例、SHM 用法）
@@ -124,6 +125,17 @@ rtspGrpcServer/
 mkdir build && cd build
 cmake .. && make -j
 ./rtsp_server [address:port]   # 默认 0.0.0.0:50051
+```
+
+### 纯 CPU 编译（禁用 CUDA）
+
+通过 `-DENABLE_CUDA=OFF` 可在编译期完全排除 NVCUVID/NVJPEG 相关代码，不依赖 CUDA Toolkit。此时 `DECODER_GPU_NVCUVID` 会自动回退到 CPU 解码。
+
+```bash
+mkdir build-cpu && cd build-cpu
+cmake -DENABLE_CUDA=OFF ..
+make -j
+./rtsp_server [address:port]
 ```
 
 ### 依赖项（开发环境）
@@ -273,9 +285,16 @@ python example.py [编号]      # 编号 1-10，或 all 顺序运行全部
 
 ### CPU-only 部署
 
-- 使用 `Dockerfile.cpu`（多阶段构建，Builder + Runtime）
-- 不包含 CUDA 相关依赖
-- 解码器必须选择 `DECODER_CPU_FFMPEG`
+- 使用 `Dockerfile.cpu`（单阶段运行镜像，基于 `ubuntu:22.04`，不含 CUDA）
+- 需要先在宿主机编译 CPU-only 二进制：`cmake -DENABLE_CUDA=OFF .. && make`
+- 将生成的 `rtsp_server` 放到项目根目录
+- 使用 `docker-compose.cpu.yml` 一键启动：
+  ```bash
+  mkdir -p /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}
+  cp build-cpu/rtsp_server ./rtsp_server
+  SHM_NAMESPACE=grpc_rtsp docker compose -f docker-compose.cpu.yml up -d
+  ```
+- 此时 `DECODER_GPU_NVCUVID` 会自动回退为 CPU 解码
 
 ### Envoy 网关（可选）
 
