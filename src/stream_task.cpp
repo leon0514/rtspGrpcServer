@@ -1,14 +1,18 @@
 #include "stream_task.hpp"
 #include "task_scheduler.hpp"
-#include "nvjpeg_encoder.hpp"
 #include "opencv_encoder.hpp"
 #include "turbojpeg_encoder.hpp"
-#include "cuda_decoder.hpp"
 #include <chrono>
 #include <thread>
 #include <spdlog/spdlog.h>
-#include "cuda_tools.hpp"
 #include <unordered_map>
+#include "stream_service.pb.h"
+
+#ifdef RTSP_ENABLE_CUDA
+#include "nvjpeg_encoder.hpp"
+#include "cuda_decoder.hpp"
+#include "cuda_tools.hpp"
+#endif
 
 namespace {
     using EncoderPtr = std::shared_ptr<IImageEncoder>;
@@ -34,7 +38,12 @@ namespace {
         EncoderPtr encoder;
         if (use_gpu_encoder)
         {
+#ifdef RTSP_ENABLE_CUDA
             encoder = std::make_shared<NvjpegEncoder>(quality, gpu_id);
+#else
+            spdlog::warn("[getThreadLocalEncoder] GPU encoder requested but CUDA disabled, using CPU encoder");
+            encoder = std::make_shared<TurboJpegEncoder>(quality);
+#endif
         }
         else
         {
@@ -70,11 +79,30 @@ StreamTask::StreamTask(const std::string &url,
       use_gpu_encoder_(use_gpu_encoder),
       jpeg_quality_(jpeg_quality)
 {
+#ifndef RTSP_ENABLE_CUDA
+    // CUDA 未启用时，强制关闭 GPU 编码器，并把请求的 GPU 解码器类型修正为 CPU
+    if (use_gpu_encoder_)
+    {
+        spdlog::warn("[StreamTask] CUDA disabled at build time, forcing CPU encoder for stream {}", stream_id_);
+        use_gpu_encoder_ = false;
+    }
+    if (decoder_type_ == streamingservice::DECODER_GPU_NVCUVID)
+    {
+        spdlog::warn("[StreamTask] CUDA disabled at build time, decoder_type GPU_NVCUVID falls back to CPU_FFMPEG for stream {}", stream_id_);
+        decoder_type_ = streamingservice::DECODER_CPU_FFMPEG;
+    }
+    if (saved_decoder_type_ == streamingservice::DECODER_GPU_NVCUVID)
+    {
+        saved_decoder_type_ = streamingservice::DECODER_CPU_FFMPEG;
+    }
+#endif
+
     // 初始化内存池
     frame_pool_ = FrameMemoryPool::create(3 * 1024 * 1024);
     updateHeartbeat();
     last_encode_time_ = std::chrono::steady_clock::now();
 
+#ifdef RTSP_ENABLE_CUDA
     // 为每路 GPU 流创建独立的 CUDA Stream
     if (gpu_id_ >= 0)
     {
@@ -99,6 +127,7 @@ StreamTask::StreamTask(const std::string &url,
             }
         }
     }
+#endif
 
     if (use_shared_mem_)
     {
@@ -170,6 +199,7 @@ StreamTask::~StreamTask()
         }
     }
     
+#ifdef RTSP_ENABLE_CUDA
     if (cuda_stream_)
     {
         CUDATools::AutoDevice auto_device_exchange(gpu_id_);
@@ -177,6 +207,7 @@ StreamTask::~StreamTask()
         cuda_stream_ = nullptr;
         spdlog::info("[StreamTask] CUDA stream destroyed for stream {}", stream_id_);
     }
+#endif
     // 清理最新的引用，引用计数减一，可能触发内存归还或释放
     {
         std::unique_lock<std::shared_mutex> frame_lock(frame_mutex_);
@@ -572,10 +603,12 @@ void StreamTask::stepCompute()
         return;
     }
         
+#ifdef RTSP_ENABLE_CUDA
     if (gpu_id_ >= 0)
     {
         CUDATools::AutoDevice auto_device_exchange(gpu_id_);
     }
+#endif
 
     std::unique_lock<std::mutex> lock(decoder_mutex_);
     if (!decoder_ || !decoder_->isOpened())
@@ -624,6 +657,7 @@ void StreamTask::stepCompute()
         {
             auto encoder = getThreadLocalEncoder(use_gpu_encoder_, gpu_id_, jpeg_quality_);
 
+#ifdef RTSP_ENABLE_CUDA
             if (cuda_stream_)
             {
                 auto *nvjpeg_enc = dynamic_cast<NvjpegEncoder *>(encoder.get());
@@ -632,6 +666,7 @@ void StreamTask::stepCompute()
                     nvjpeg_enc->setStream(cuda_stream_);
                 }
             }
+#endif
 
             if (decoder_->isGpuFrame() && encoder->supportsGpuEncode())
             {
@@ -818,7 +853,19 @@ void StreamTask::switchDecoder(int decoder_type,
 
     pending_decoder_ = std::move(decoder);
     pending_decoder_type_ = decoder_type;
+
+#ifndef RTSP_ENABLE_CUDA
+    // CUDA 未启用时禁止切换到 GPU 路径
+    if (pending_decoder_type_ == streamingservice::DECODER_GPU_NVCUVID)
+    {
+        spdlog::warn("[switchDecoder] CUDA disabled at build time, requested GPU_NVCUVID falls back to CPU_FFMPEG");
+        pending_decoder_type_ = streamingservice::DECODER_CPU_FFMPEG;
+    }
+    pending_use_gpu_encoder_ = false;
+#else
     pending_use_gpu_encoder_ = use_gpu_encoder;
+#endif
+
     pending_url_ = new_url;
     decoder_changed_ = true;
     spdlog::info("StreamTask decoder switch scheduled: {} -> {}, url: {}",

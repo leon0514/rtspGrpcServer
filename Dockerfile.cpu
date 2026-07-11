@@ -1,60 +1,23 @@
-# ==========================================
-# 第一阶段：编译环境 (Builder)
-# ==========================================
-FROM ubuntu:22.04 AS builder
-
-# 设置非交互模式，防止 apt-get 安装时卡在时区选择
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 【新增】替换为阿里云镜像源 (加速下载)
-# 替换 archive.ubuntu.com 和 security.ubuntu.com 为 mirrors.aliyun.com
-RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
-    sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
-
-# 安装编译所需的依赖链：GCC, CMake, OpenCV, gRPC, Protobuf, FFmpeg
-RUN apt-get update -y && apt-get install -y \
-    build-essential \
-    cmake \
-    pkg-config \
-    libopencv-dev \
-    libgrpc++-dev \
-    protobuf-compiler-grpc \
-    protobuf-compiler \
-    libprotobuf-dev \
-    libfmt-dev \
-    libspdlog-dev \
-    libturbojpeg0-dev \
-    libavcodec-dev \
-    libavformat-dev \
-    libavutil-dev \
-    libswscale-dev \
-    libjemalloc-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# 设置工作目录
-WORKDIR /app
-
-# 拷贝当前目录的所有源码到容器内
-COPY . /app
-
-# 执行 CMake 构建
-RUN mkdir build && cd build && \
-    cmake .. && \
-    make -j$(nproc)
-
-# ==========================================
-# 第二阶段：运行环境 (Runtime)
-# ==========================================
+# 纯 CPU 运行镜像（非 CUDA 基础镜像）
+# 用法：
+#   1. 先在宿主机编译 CPU-only 二进制：
+#        mkdir build-cpu && cd build-cpu
+#        cmake -DENABLE_CUDA=OFF ..
+#        make -j$(nproc)
+#   2. 将编译好的 rtsp_server 放到项目根目录（或修改下面的 COPY 路径）
+#        cp build-cpu/rtsp_server ./rtsp_server
+#   3. 构建镜像：
+#        docker build -f Dockerfile.cpu -t rtsp_server_cpu .
+#
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 【新增】替换为阿里云镜像源 (加速下载)
+# 替换为阿里云镜像源（可选，加速下载）
 RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
     sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
 
-# 安装运行所需的动态链接库
-# 注意：这里安装 -dev 包是为了确保所有的 .so 软链接都完整存在，体积增加可接受
+# 安装运行时所需的动态链接库
 RUN apt-get update && apt-get install -y \
     libopencv-dev \
     libgrpc++-dev \
@@ -72,13 +35,14 @@ RUN apt-get update && apt-get install -y \
 # 设置工作目录
 WORKDIR /app
 
-# 从 builder 阶段拷贝海康 SDK 运行时库
-COPY --from=builder /app/sdk/hikvision /opt/hikvision
+# 海康 SDK 运行时库（可选）
+COPY sdk/hikvision /opt/hikvision
 ENV LD_LIBRARY_PATH=/opt/hikvision/hik_libs:/opt/hikvision/hik_libs/HCNetSDKCom:${LD_LIBRARY_PATH}
 RUN ldconfig /opt/hikvision/hik_libs /opt/hikvision/hik_libs/HCNetSDKCom
 
-# 从 builder 阶段把编译好的二进制可执行文件拷贝过来
-COPY --from=builder /app/build/rtsp_server /app/rtsp_server
+# 拷贝已编译好的 CPU-only 二进制
+# 请确保宿主机当前目录下存在 rtsp_server 文件
+COPY rtsp_server /app/rtsp_server
 
 # 暴露 gRPC 默认监听的 50051 端口
 EXPOSE 50051

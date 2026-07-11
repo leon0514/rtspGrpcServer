@@ -12,7 +12,10 @@
 #include <chrono>
 #include <condition_variable>
 #include "zero_copy_channel.hpp"
+
+#ifdef RTSP_ENABLE_CUDA
 #include <cuda_runtime.h>
+#endif
 
 enum class StreamStatus
 {
@@ -126,7 +129,10 @@ private:
     // 保存启动时指定的解码器类型和 GPU ID，便于 HIK_SDK 切回 RTSP 时恢复
     int saved_decoder_type_ = 0;
     int saved_gpu_id_ = -1;
+
+#ifdef RTSP_ENABLE_CUDA
     cudaStream_t cuda_stream_ = nullptr; // 每路流独立的 CUDA Stream
+#endif
 
     std::unique_ptr<IVideoDecoder> decoder_;
     bool use_gpu_encoder_ = false;

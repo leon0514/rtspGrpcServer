@@ -1,9 +1,12 @@
 #include "decoder_factory.hpp"
-#include "cuda_decoder.hpp"
 #include "cpu_decoder.hpp"
-#include "cuda_tools.hpp"
 #include <iostream>
 #include <spdlog/spdlog.h>
+
+#ifdef RTSP_ENABLE_CUDA
+#include "cuda_decoder.hpp"
+#include "cuda_tools.hpp"
+#endif
 
 #ifdef HAS_HIKVISION_SDK
 #include "hik_decoder.hpp"
@@ -17,12 +20,17 @@ std::unique_ptr<IVideoDecoder> DecoderFactory::create(streamingservice::DecoderT
         return std::make_unique<CpuDecoder>(only_key_frames);
 
     case streamingservice::DECODER_GPU_NVCUVID:
+#ifdef RTSP_ENABLE_CUDA
         if (!CUDATools::check_device_id(gpu_id))
         {
             spdlog::error("[DecoderFactory] Invalid gpu_id {}, falling back to CPU decoder", gpu_id);
             return std::make_unique<CpuDecoder>(only_key_frames);
         }
         return std::make_unique<CudaDecoder>(gpu_id, only_key_frames);
+#else
+        spdlog::error("[DecoderFactory] GPU_NVCUVID requested but CUDA support disabled at build time, falling back to CPU decoder");
+        return std::make_unique<CpuDecoder>(only_key_frames);
+#endif
 
     case streamingservice::DECODER_HIK_SDK:
 #ifdef HAS_HIKVISION_SDK

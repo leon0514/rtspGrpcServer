@@ -1,24 +1,35 @@
 cmake_minimum_required(VERSION 3.18)
-# 显式启用 CXX 和 CUDA 语言支持
-project(rtsp_grpc_server LANGUAGES CXX CUDA)
+
+# 通过编译选项控制是否启用 CUDA GPU 编解码支持
+#   ON  (默认): 保留 NVCUVID/NVJPEG 相关代码，需要 CUDA Toolkit
+#   OFF      : 完全排除 CUDA 相关源文件与依赖，仅编译 CPU 路径
+option(ENABLE_CUDA "Enable CUDA GPU decoder/encoder support (NVCUVID/NVJPEG)" ON)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CUDA_STANDARD 17)
 
-# ==========================================
-# 1. 修复 GPU 架构问题
-# ==========================================
-# 显式指定常见架构，避免 native 探测失败
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
+if(ENABLE_CUDA)
+    project(rtsp_grpc_server LANGUAGES CXX CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+
+    # ==========================================
+    # 1. 修复 GPU 架构问题
+    # ==========================================
+    # 显式指定常见架构，避免 native 探测失败
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
+    endif()
+else()
+    project(rtsp_grpc_server LANGUAGES CXX)
 endif()
 
 # ==========================================
 # 2. 查找依赖
 # ==========================================
 
-# 查找 CUDA 工具包（这会定义 CUDA::cudart, CUDA::cuda_driver 等目标）
-find_package(CUDAToolkit REQUIRED)
+if(ENABLE_CUDA)
+    # 查找 CUDA 工具包（这会定义 CUDA::cudart, CUDA::cuda_driver 等目标）
+    find_package(CUDAToolkit REQUIRED)
+endif()
 
 # 查找 OpenCV
 find_package(OpenCV REQUIRED)
@@ -52,19 +63,23 @@ else()
     message(STATUS "Found turbojpeg: ${TURBOJPEG_LIBRARY}")
 endif()
 
-find_library(NVCUVID_LIBRARY 
-    NAMES nvcuvid 
-    PATHS /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu
-    NO_DEFAULT_PATH # 强制只从指定路径找
-)
+if(ENABLE_CUDA)
+    find_library(NVCUVID_LIBRARY 
+        NAMES nvcuvid 
+        PATHS /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu
+        NO_DEFAULT_PATH # 强制只从指定路径找
+    )
 
-if(NOT NVCUVID_LIBRARY)
-    # 仅警告，不调用 FATAL_ERROR
-    message(WARNING "nvcuvid library NOT found during build time. Ensure it is available at runtime!")
-    # 设置一个空值，确保链接不报错
-    set(NVCUVID_LIBRARY "")
+    if(NOT NVCUVID_LIBRARY)
+        # 仅警告，不调用 FATAL_ERROR
+        message(WARNING "nvcuvid library NOT found during build time. Ensure it is available at runtime!")
+        # 设置一个空值，确保链接不报错
+        set(NVCUVID_LIBRARY "")
+    else()
+        message(STATUS "Found nvcuvid: ${NVCUVID_LIBRARY}")
+    endif()
 else()
-    message(STATUS "Found nvcuvid: ${NVCUVID_LIBRARY}")
+    set(NVCUVID_LIBRARY "")
 endif()
 
 # ==========================================
@@ -124,14 +139,19 @@ add_custom_command(
 # ==========================================
 include_directories(
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/nvcuvid"
     "${PROTO_GEN_DIR}"
     ${OpenCV_INCLUDE_DIRS}
     ${GRPC_INCLUDE_DIRS}
     ${SPDLOG_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
-    ${CUDAToolkit_INCLUDE_DIRS} # 关键：包含 cuda.h 路径
 )
+
+if(ENABLE_CUDA)
+    include_directories(
+        "${CMAKE_CURRENT_SOURCE_DIR}/nvcuvid"
+        ${CUDAToolkit_INCLUDE_DIRS} # 关键：包含 cuda.h 路径
+    )
+endif()
 
 if(EXISTS "${HIKVISION_SDK_INCLUDE_DIR}/HCNetSDK.h")
     include_directories("${HIKVISION_SDK_INCLUDE_DIR}")
@@ -147,18 +167,24 @@ set(SRC_FILES
     src/decoder_factory.cpp
     src/cpu_decoder.cpp
     src/ffmpeg_decoder.cpp
-    src/nvjpeg_encoder.cpp   # GPU JPEG 编码器
     src/opencv_encoder.cpp
     src/turbojpeg_encoder.cpp
     src/ffmpeg_demuxer.cpp
-    src/cuda_tools.cpp
-    src/cuvid_decoder.cpp
-    src/color.cu            
     src/simple-logger.cpp
-    src/cuda_decoder.cpp
     src/timer_scheduler.cpp
     src/hik_url_parser.cpp   # 海康 URL 解析（无 SDK 依赖）
 )
+
+if(ENABLE_CUDA)
+    list(APPEND SRC_FILES
+        src/nvjpeg_encoder.cpp   # GPU JPEG 编码器
+        src/cuda_tools.cpp
+        src/cuvid_decoder.cpp
+        src/color.cu
+        src/cuda_decoder.cpp
+    )
+    add_compile_definitions(RTSP_ENABLE_CUDA)
+endif()
 
 # 海康 SDK 源文件仅在找到 SDK 时编译
 if(HIKVISION_LIBRARIES)
@@ -181,10 +207,12 @@ add_executable(rtsp_server
     "${PROTO_GEN_DIR}/stream_service.grpc.pb.cc"
 )
 
-# 开启 CUDA 分离编译
-set_target_properties(rtsp_server PROPERTIES 
-    CUDA_SEPARABLE_COMPILATION ON
-)
+if(ENABLE_CUDA)
+    # 开启 CUDA 分离编译
+    set_target_properties(rtsp_server PROPERTIES 
+        CUDA_SEPARABLE_COMPILATION ON
+    )
+endif()
 
 # 若链接了海康 SDK，把 SDK 库目录加入运行时搜索路径
 if(HIKVISION_LIBRARIES)
@@ -238,12 +266,18 @@ target_link_libraries(rtsp_server
     ${SPDLOG_LIBRARIES}
     ${FFMPEG_LIBRARIES}     
     ${NVCUVID_LIBRARY}      
-    CUDA::cudart              # CUDA Runtime API (cudaMalloc等)
-    CUDA::cuda_driver         # CUDA Driver API (cuInit等，解决cuda.h相关链接)
-    CUDA::nvjpeg              # NVJPEG GPU 编码库
     protobuf::libprotobuf 
     grpc++_reflection
     ${JEMALLOC_LIBRARIES}
     ${TURBOJPEG_LIBRARY}
     ${HIKVISION_LIBRARIES}    # 海康 SDK 库（可选）
 )
+
+if(ENABLE_CUDA)
+    target_link_libraries(rtsp_server
+        PRIVATE
+        CUDA::cudart              # CUDA Runtime API (cudaMalloc等)
+        CUDA::cuda_driver         # CUDA Driver API (cuInit等，解决cuda.h相关链接)
+        CUDA::nvjpeg              # NVJPEG GPU 编码库
+    )
+endif()

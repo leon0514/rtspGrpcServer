@@ -2,8 +2,11 @@
 #include "decoder_factory.hpp"
 #include "hik_url_parser.hpp"
 #include "opencv_encoder.hpp"
-#include "nvjpeg_encoder.hpp"
 #include "utils.hpp"
+
+#ifdef RTSP_ENABLE_CUDA
+#include "nvjpeg_encoder.hpp"
+#endif
 #include "task_scheduler.hpp"
 #include <malloc.h>
 #include <sys/mman.h>

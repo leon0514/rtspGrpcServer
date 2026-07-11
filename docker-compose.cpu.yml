@@ -1,0 +1,38 @@
+# 纯 CPU 部署编排（无 CUDA、无 GPU）
+# 前置步骤：
+#   1. 编译 CPU-only 二进制：
+#        mkdir build-cpu && cd build-cpu
+#        cmake -DENABLE_CUDA=OFF ..
+#        make -j$(nproc)
+#        cd ..
+#        cp build-cpu/rtsp_server ./rtsp_server
+#   2. 确保共享内存命名空间目录已创建：
+#        mkdir -p /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}
+#
+# 启动：
+#   SHM_NAMESPACE=grpc_rtsp docker compose -f docker-compose.cpu.yml up -d
+# 停止：
+#   docker compose -f docker-compose.cpu.yml down
+
+services:
+  grpc_rtsp_cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: rtsp_server_cpu
+    container_name: rtsp_server_cpu
+    # 注意：使用 bind mount 挂载宿主机 /dev/shm/<SHM_NAMESPACE> 后，
+    # 容器内 /dev/shm 实际容量由宿主机 /dev/shm 决定。如需调整请在宿主机执行：
+    #   mount -o remount,size=32G /dev/shm
+    volumes:
+      # 项目级 SHM 隔离：支持通过 SHM_NAMESPACE 环境变量将共享内存文件隔离到
+      # /dev/shm/<SHM_NAMESPACE>/ 下，避免同一宿主机多个项目之间的 stream_id 冲突。
+      - /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}:/dev/shm
+    environment:
+      # CPU-only 模式不需要 NVIDIA 相关环境变量
+      - SHM_NAMESPACE=${SHM_NAMESPACE:-grpc_rtsp}
+    ports:
+      - "50051:50051"
+    stdin_open: true
+    tty: true
+    restart: unless-stopped

@@ -12,7 +12,10 @@
 #include "rtsp_service.hpp"
 #include "task_scheduler.hpp"
 #include "timer_scheduler.hpp"
+
+#ifdef RTSP_ENABLE_CUDA
 #include <cuda_runtime.h>
+#endif
 
 // spdlog headers
 #include <spdlog/spdlog.h>
@@ -80,6 +83,7 @@ void setupLogging()
     spdlog::set_default_logger(logger);
 }
 
+#ifdef RTSP_ENABLE_CUDA
 // 【修改】初始化所有 CUDA 设备，而不仅仅是设备 0
 void initCudaDevices()
 {
@@ -121,6 +125,7 @@ void initCudaDevices()
     // 防御性编程：回到默认设备0
     cudaSetDevice(0);
 }
+#endif
 
 int main(int argc, char **argv)
 {
